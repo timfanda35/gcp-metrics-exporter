@@ -194,4 +194,4 @@ config/             # Prometheus scrape config (dev)
 
 ## License
 
-TBD.
+[MIT](LICENSE)
