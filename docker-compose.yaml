@@ -1,0 +1,62 @@
+services:
+  exporter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gcp-metrics-exporter:dev
+    container_name: gcp-metrics-exporter
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: "info"
+      LOG_FORMAT: "json"
+      SCRAPE_TIMEOUT: "30s"
+      MAX_CONCURRENT_SCRAPES: "16"
+      MAX_SERIES_PER_REQUEST: "10000"
+      SHUTDOWN_GRACE: "10s"
+      # Optional: set to a target SA email to use as the default impersonation target.
+      # DEFAULT_IMPERSONATE_SA: "metrics-reader@my-project.iam.gserviceaccount.com"
+      # Uncomment together with the volume mount below if you ship a Service Account JSON
+      # into the container instead of relying on Application Default Credentials.
+      # GOOGLE_APPLICATION_CREDENTIALS: "/secrets/sa.json"
+    # volumes:
+    #   # Most local dev should rely on `gcloud auth application-default login` (ADC) on the host
+    #   # rather than mounting a key. If you must mount a Service Account JSON, do it read-only:
+    #   - ./secrets/sa.json:/secrets/sa.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/exporter", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - default
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gcp-metrics-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    depends_on:
+      - exporter
+    restart: unless-stopped
+    networks:
+      - default
+
+volumes:
+  prometheus-data:
+    driver: local
+
+networks:
+  default:
+    name: gcp-metrics-net

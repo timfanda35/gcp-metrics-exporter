@@ -1,0 +1,47 @@
+global:
+  scrape_interval: 30s
+  scrape_timeout: 15s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: gcp-metrics-exporter
+
+scrape_configs:
+  # Scrape the exporter itself for Prometheus-format GCP Cloud Monitoring queries.
+  #
+  # Each "target" string is encoded as "<gcp_project_id>;<gcp_metric_type>".
+  # The relabel_configs below split that string into the two query parameters
+  # (`project` and `metric_type`) that the exporter expects, then rewrites
+  # __address__ so Prometheus actually dials the exporter container.
+  - job_name: gcp-metrics-exporter
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          # Replace these with real <project>;<metric_type> pairs.
+          - "my-project-a;compute.googleapis.com/instance/cpu/utilization"
+          - "my-project-b;run.googleapis.com/request_count"
+        labels:
+          source: gcp-cloud-monitoring
+    relabel_configs:
+      # Extract the GCP project ID (everything before the first ';') into ?project=...
+      - source_labels: [__address__]
+        regex: "([^;]+);(.+)"
+        target_label: __param_project
+        replacement: "$1"
+      # Extract the GCP metric type (everything after the first ';') into ?metric_type=...
+      - source_labels: [__address__]
+        regex: "([^;]+);(.+)"
+        target_label: __param_metric_type
+        replacement: "$2"
+      # Surface the project as an `instance` label so series are easy to identify.
+      - source_labels: [__param_project]
+        target_label: instance
+      # Finally, point all of these targets at the exporter service.
+      - target_label: __address__
+        replacement: "exporter:8080"
+
+  # Optional: scrape Prometheus's own metrics for self-monitoring.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "localhost:9090"

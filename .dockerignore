@@ -1,0 +1,32 @@
+# Version control
+.git
+.gitignore
+.github
+
+# Documentation (not needed inside the image)
+*.md
+
+# Local Go vendor tree (we use module cache in the build stage)
+vendor
+
+# Local Service Account / credentials JSON files at the repo root.
+# Go test files live in *_test.go (.go extension) so this is safe.
+*.json
+# But we DO want go.sum if it exists (it has no .json extension; kept for clarity).
+!go.sum
+
+# Editor / OS cruft
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Build artifacts that shouldn't leak into the build context
+/exporter
+/dist
+/bin
+/tmp
+
+# Compose / local dev state
+docker-compose.override.yaml
