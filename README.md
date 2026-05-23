@@ -17,6 +17,16 @@ Cross-project queries and Service Account impersonation are first-class on both 
 - Streaming response, per-request timeout, concurrency cap
 - Single static binary, distroless container
 
+## Which backend?
+
+| | `/metrics` | `/gmp-metrics` |
+|---|---|---|
+| **Metric source** | GCP Cloud Monitoring native metrics | GMP-stored Prometheus metrics |
+| **Query language** | Cloud Monitoring filter + aggregation | PromQL |
+| **Typical use** | `compute/`, `run/`, `gke/` and other GCP service metrics | Custom app metrics written via remote write |
+| **Result types** | Gauge, Counter, Histogram (converted from GCP kinds) | Gauge only (instant query, no type conversion) |
+| **When to prefer** | Querying GCP-native service metrics | You already have a PromQL query and GMP enabled |
+
 ## Prerequisites
 
 - Go 1.22+ (for building from source)
@@ -56,21 +66,41 @@ curl 'http://localhost:8080/gmp-metrics?project=YOUR_PROJECT&query=up'
 
 Spins up the exporter plus a Prometheus instance pre-wired to scrape it.
 
+The container cannot use host ADC directly — provide a Service Account JSON key:
+
 ```bash
-# If you want ADC inside the container, mount your gcloud config (Linux/macOS):
 mkdir -p secrets
-# either: provide a SA JSON
 cp /path/to/sa.json secrets/sa.json
-# (then uncomment the GOOGLE_APPLICATION_CREDENTIALS env and the volume mount in docker-compose.yaml)
+```
 
-# Edit config/prometheus.yml — replace the placeholder targets with your project IDs
-# Targets are formatted as "<project>;<metric_type>"
+Then uncomment these two lines in `docker-compose.yaml`:
 
+```yaml
+      GOOGLE_APPLICATION_CREDENTIALS: "/secrets/sa.json"
+    volumes:
+      - ./secrets/sa.json:/secrets/sa.json:ro
+```
+
+Edit `config/prometheus.yml` to replace the placeholder targets with your project IDs (format: `"<project>;<metric_type>"`), then:
+
+```bash
 docker compose up --build
 ```
 
 - Exporter: <http://localhost:8080>
 - Prometheus UI: <http://localhost:9090>
+
+## Quick start — published image
+
+A pre-built image is published to GitHub Container Registry on every push to `main` and on version tags:
+
+```bash
+docker run --rm \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/secrets/sa.json \
+  -v /path/to/sa.json:/secrets/sa.json:ro \
+  -p 8080:8080 \
+  ghcr.io/timfanda35/gcp-metrics-exporter:latest
+```
 
 ## API
 
@@ -115,10 +145,24 @@ curl 'http://localhost:8080/gmp-metrics?project=my-project&query=http_requests_t
 
 Response: `text/plain; version=0.0.4; charset=utf-8` (Prometheus exposition format).
 
+The `metric.type` filter clause is always prepended automatically; the `filter` parameter is AND-composed onto it:
+
+| `filter` value | Effective GCP filter |
+|---|---|
+| *(empty)* | `metric.type = "compute.googleapis.com/instance/cpu/utilization"` |
+| `resource.type="gce_instance"` | `... AND (resource.type="gce_instance")` |
+| `resource.labels.zone="us-central1-a"` | `... AND (resource.labels.zone="us-central1-a")` |
+| `metric.labels.state="idle"` | `... AND (metric.labels.state="idle")` |
+
+Invalid filter syntax is caught by the GCP API and returned as HTTP 400.
+
 Example:
 
 ```bash
 curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googleapis.com/instance/cpu/utilization&interval=10m&aligner=ALIGN_MEAN'
+
+# With filter
+curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googleapis.com/instance/cpu/utilization&filter=resource.type%3D"gce_instance"'
 ```
 
 ### `GET /healthz`
@@ -148,7 +192,7 @@ Applies to both `/metrics` and `/gmp-metrics`:
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LOG_FORMAT` | `json` | `json` / `text` |
 | `SCRAPE_TIMEOUT` | `30s` | Per-request timeout for the upstream GCP call |
-| `MAX_CONCURRENT_SCRAPES` | `16` | Concurrent `/metrics` requests; over-limit returns 429 |
+| `MAX_CONCURRENT_SCRAPES` | `16` | Concurrent in-flight requests across all endpoints; over-limit returns 429 |
 | `MAX_SERIES_PER_REQUEST` | `10000` | Hard cap on series returned per response |
 | `SHUTDOWN_GRACE` | `10s` | Graceful shutdown timeout |
 
@@ -220,10 +264,13 @@ scrape_configs:
 ## Development
 
 ```bash
+# Tidy dependencies
+go mod tidy
+
 # Unit tests
 go test -count=1 -race ./...
 
-# Integration tests (in-process bufconn fake GCP server)
+# Integration tests (in-process fake gRPC server — no real GCP credentials needed)
 go test -tags=integration -count=1 -race -timeout=60s ./internal/integration/...
 
 # Vet
