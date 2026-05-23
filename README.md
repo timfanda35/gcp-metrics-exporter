@@ -1,10 +1,16 @@
 # GCP Metrics Exporter
 
-An HTTP server that proxies Prometheus scrapes into GCP Cloud Monitoring API queries. Each `/metrics` request becomes a live `ListTimeSeries` call — no in-memory state, no scheduler, no buffer. Cross-project queries and Service Account impersonation are first-class.
+An HTTP server that proxies Prometheus scrapes into GCP queries. Two backends are supported:
+
+- **`/metrics`** — queries **GCP Cloud Monitoring** via `ListTimeSeries`. Each request is a live API call; no in-memory state, no scheduler.
+- **`/gmp-metrics`** — queries **GCP Managed Service for Prometheus (GMP)** via its Prometheus-compatible PromQL API. Results are already Prometheus-native (no DELTA→COUNTER conversion needed).
+
+Cross-project queries and Service Account impersonation are first-class on both endpoints.
 
 ## Features
 
 - Stateless: every scrape is a live query
+- Two backends: Cloud Monitoring (filter syntax) and GMP (PromQL)
 - Multi-project: each request can target a different GCP project
 - Service Account impersonation per request or per deploy
 - Native Prometheus exposition format (text v0.0.4)
@@ -39,7 +45,11 @@ In another shell:
 ```bash
 curl 'http://localhost:8080/healthz'
 
+# Cloud Monitoring backend
 curl 'http://localhost:8080/metrics?project=YOUR_PROJECT&metric_type=compute.googleapis.com/instance/cpu/utilization'
+
+# GMP backend (requires GMP enabled in the project)
+curl 'http://localhost:8080/gmp-metrics?project=YOUR_PROJECT&query=up'
 ```
 
 ## Quick start — Docker Compose
@@ -63,6 +73,31 @@ docker compose up --build
 - Prometheus UI: <http://localhost:9090>
 
 ## API
+
+### `GET /gmp-metrics`
+
+Queries [GCP Managed Service for Prometheus](https://cloud.google.com/stackdriver/docs/managed-prometheus) using its Prometheus-compatible instant query API. Metrics stored in GMP are already Prometheus-native — no DELTA/CUMULATIVE type conversion occurs. All results are returned as `gauge`.
+
+| Query Parameter | Required | Default | Description |
+|---|---|---|---|
+| `project` | yes | — | GCP Project ID |
+| `query` | yes | — | PromQL expression, e.g. `up{job="my-app"}` |
+| `time_offset` | no | `0` | Shift the query time back by this duration (Go duration: `2m`, `5m`). Use to compensate for GMP ingest delay exceeding the default 5-minute staleness window. |
+| `impersonate_sa` | no | — | Override the impersonation target for this request |
+
+Response: `text/plain; version=0.0.4; charset=utf-8`. All metrics are emitted as `gauge`.
+
+Example:
+
+```bash
+# Instant query at current time
+curl 'http://localhost:8080/gmp-metrics?project=my-project&query=up{job="my-app"}'
+
+# With time_offset to account for ingest delay
+curl 'http://localhost:8080/gmp-metrics?project=my-project&query=http_requests_total&time_offset=3m'
+```
+
+> **Note:** GMP must be enabled in the target project. The base credentials need `roles/monitoring.viewer` on the project. GMP stores metrics that workloads write via Prometheus remote write or the GMP collector — it is separate from Cloud Monitoring native metrics.
 
 ### `GET /metrics`
 
@@ -92,13 +127,15 @@ Liveness only. Returns `200 OK` with `{"status":"ok"}`. Does not call GCP.
 
 ### Error mapping
 
+Applies to both `/metrics` and `/gmp-metrics`:
+
 | Condition | HTTP |
 |---|---|
-| Missing required param / bad duration / invalid aligner or reducer | 400 |
-| Project or metric type not found | 404 |
+| Missing required param / bad duration / invalid query | 400 |
+| Project or metric type not found (`/metrics` only) | 404 |
 | Concurrency cap hit | 429 |
 | Quota exhausted (`Retry-After: 30`) or series cap exceeded | 503 |
-| GCP `PermissionDenied` / `Unauthenticated` | 502 |
+| GCP auth / permission error | 502 |
 | Per-request timeout exceeded | 504 |
 
 ## Configuration (environment variables)
@@ -131,6 +168,8 @@ The base principal needs `roles/iam.serviceAccountTokenCreator` on the impersona
 
 ## Prometheus scrape config
 
+### Cloud Monitoring backend (`/metrics`)
+
 Multi-target: one Prometheus job, one `static_configs.targets` entry per `(project, metric_type)` pair, separated by `;`. The included [config/prometheus.yml](config/prometheus.yml) shows the full pattern:
 
 ```yaml
@@ -152,6 +191,30 @@ scrape_configs:
         replacement: $2
       - target_label: __address__
         replacement: exporter:8080
+```
+
+### GMP backend (`/gmp-metrics`)
+
+One job per PromQL query. Use `params` to pass `project` and `query`:
+
+```yaml
+scrape_configs:
+  - job_name: gmp-app-metrics
+    metrics_path: /gmp-metrics
+    params:
+      project: [my-gcp-project]
+      query: ['up{job="my-app"}']
+      # time_offset: [2m]   # uncomment if metrics have > 5m ingest delay
+    static_configs:
+      - targets: ['exporter:8080']
+
+  - job_name: gmp-request-rate
+    metrics_path: /gmp-metrics
+    params:
+      project: [my-gcp-project]
+      query: ['http_requests_total']
+    static_configs:
+      - targets: ['exporter:8080']
 ```
 
 ## Development
@@ -177,7 +240,8 @@ Project layout:
 cmd/server          # main entry point, env loading, graceful shutdown, --healthcheck flag
 internal/auth       # GCP credentials + impersonation
 internal/collector  # Cloud Monitoring queries → Prometheus metrics
-internal/handler    # HTTP handlers (/metrics, /healthz)
+internal/gmp        # GMP PromQL queries → Prometheus metrics
+internal/handler    # HTTP handlers (/metrics, /gmp-metrics, /healthz)
 internal/integration# end-to-end test (build tag: integration)
 config/             # Prometheus scrape config (dev)
 ```

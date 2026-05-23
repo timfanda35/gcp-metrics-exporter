@@ -26,6 +26,7 @@ import (
 
 	"github.com/timfanda35/gcp-metrics-exporter/internal/auth"
 	"github.com/timfanda35/gcp-metrics-exporter/internal/collector"
+	"github.com/timfanda35/gcp-metrics-exporter/internal/gmp"
 	"github.com/timfanda35/gcp-metrics-exporter/internal/handler"
 )
 
@@ -255,8 +256,15 @@ func main() {
 
 	metricsHandler := handler.NewMetricsHandler(factory, limits, logger)
 
+	gmpCache := gmp.NewClientCache(authCfg)
+	gmpFactory := func(ctx context.Context, sa string) (gmp.Client, error) {
+		return gmpCache.Get(ctx, sa)
+	}
+	gmpHandler := handler.NewGMPHandler(gmpFactory, limits, logger)
+
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metricsHandler)
+	mux.Handle("/gmp-metrics", gmpHandler)
 	mux.HandleFunc("/healthz", handler.HandleHealthz)
 
 	srv := &http.Server{
