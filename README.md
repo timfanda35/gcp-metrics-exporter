@@ -129,6 +129,20 @@ curl 'http://localhost:8080/gmp-metrics?project=my-project&query=http_requests_t
 
 > **Note:** GMP must be enabled in the target project. The base credentials need `roles/monitoring.viewer` on the project. GMP stores metrics that workloads write via Prometheus remote write or the GMP collector — it is separate from Cloud Monitoring native metrics.
 
+#### Querying Cloud Monitoring "system metrics" through `/gmp-metrics`
+
+GMP's PromQL API can also query Cloud Monitoring's built-in system metrics (`compute.googleapis.com/...`, `run.googleapis.com/...`, etc.), not just metrics written via remote write. These retain their original Cloud Monitoring `metricKind` — `GAUGE`, `DELTA`, or `CUMULATIVE` — and that matters for how you query them:
+
+- **`rate()` / `increase()` do not work on system metrics via GMP.** GMP's instant query endpoint doesn't support range-vector selectors (`metric[5m]`) on these bridged metrics — the query succeeds (`200 OK`) but returns zero results, regardless of window size or metric kind. Only bare instant-vector queries (no range selector) return data.
+- **A `DELTA` metric's raw value is already "amount during the last sample period," not a running total.** For example, `compute.googleapis.com/instance/network/{sent,received}_bytes_count` is `DELTA` with a 60s `samplePeriod` — each scrape returns bytes transferred in that ~60s window, and the value naturally goes up and down with real traffic. Don't apply `rate()` to it downstream in Prometheus/Grafana either — it isn't a counter, so `rate()`'s counter-reset compensation logic misinterprets normal fluctuation as resets and produces a spiky, meaningless graph. Divide by the metric's `samplePeriod` instead if you want a per-second value, e.g. `compute_googleapis_com:instance_network_sent_bytes_count / 60`.
+- **Set `time_offset` to cover the metric's `ingestDelay`**, not just GMP's 5-minute staleness window — some system metrics (e.g. the network byte counters above) have a documented `ingestDelay` of 240s (4m). Querying before that delay elapses risks reading a stale or not-yet-settled sample.
+- **Check a metric's kind, sample period, and ingest delay before wiring it up:**
+  ```bash
+  TOKEN=$(gcloud auth print-access-token)
+  curl -s -H "Authorization: Bearer $TOKEN" \
+    "https://monitoring.googleapis.com/v3/projects/YOUR_PROJECT/metricDescriptors/compute.googleapis.com/instance/network/sent_bytes_count"
+  ```
+
 ### `GET /metrics`
 
 | Query Parameter | Required | Default | Description |
