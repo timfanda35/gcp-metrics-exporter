@@ -1,7 +1,6 @@
 global:
-  scrape_interval: 30s
+  scrape_interval: 60s
   scrape_timeout: 15s
-  evaluation_interval: 30s
   external_labels:
     monitor: gcp-metrics-exporter
 
@@ -19,7 +18,7 @@ scrape_configs:
       - targets:
           # Replace these with real <project>;<metric_type> pairs.
           - "my-project-a;compute.googleapis.com/instance/cpu/utilization"
-          - "my-project-b;run.googleapis.com/request_count"
+          - "my-project-b;compute.googleapis.com/instance/cpu/utilization"
         labels:
           source: gcp-cloud-monitoring
     relabel_configs:
@@ -38,7 +37,45 @@ scrape_configs:
         target_label: instance
       # Finally, point all of these targets at the exporter service.
       - target_label: __address__
-        replacement: "exporter:8080"
+        replacement: "host.docker.internal:8080"
+
+  # Scrape the exporter for GMP (Prometheus-compatible) PromQL queries via /gmp-metrics.
+  #
+  # Each "target" string is encoded as "<gcp_project_id>;<promql_query>".
+  # The relabel_configs below split that string into the two query parameters
+  # (`project` and `query`) that the exporter expects, then rewrites
+  # __address__ so Prometheus actually dials the exporter.
+  - job_name: gcp-metrics-exporter-gmp
+    metrics_path: /gmp-metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+        labels:
+          source: gcp-managed-prometheus
+    params:
+      # Replace with your real project ID.
+      project: ['my-project-a']
+      query: ['compute_googleapis_com:instance_network_received_bytes_count']
+      # instance/network/*_bytes_count is a DELTA metric (bytes per 60s sample
+      # period) with a 240s ingest delay — offset past it so we read settled
+      # data instead of racing GMP's not-yet-ingested tail. Do NOT wrap this
+      # query in rate()/increase(): the raw value is already "bytes per
+      # interval", not a running counter.
+      time_offset: ['4m']
+  - job_name: gcp-metrics-exporter-gmp2
+    metrics_path: /gmp-metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+        labels:
+          source: gcp-managed-prometheus
+    params:
+      # Replace with your real project ID.
+      project: ['my-project-a']
+      query: ['compute_googleapis_com:instance_network_sent_bytes_count']
+      time_offset: ['4m']
 
   # Optional: scrape Prometheus's own metrics for self-monitoring.
   - job_name: prometheus
