@@ -33,7 +33,7 @@
       "type": "prometheus",
       "uid": "prom-e2e"
      },
-     "expr": "{job=\"cm-gauge\"}",
+     "expr": "{job=\"cm-gauge\",__name__=~\".*cpu_utilization\"}",
      "legendFormat": "{{instance_name}} ({{project_id}})",
      "refId": "A"
     }
@@ -64,7 +64,7 @@
       "type": "prometheus",
       "uid": "prom-e2e"
      },
-     "expr": "{job=\"gmp-gauge\"}",
+     "expr": "{job=\"gmp-gauge\",__name__=~\".*cpu_utilization\"}",
      "legendFormat": "{{instance_name}} ({{project_id}})",
      "refId": "A"
     }

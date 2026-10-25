@@ -32,11 +32,14 @@ for m in prometheus_target_scrapes_sample_out_of_order_total \
 done
 
 # Exporter type check: GMP must be gauge only; report CM delta type.
-curl -sf "$EXP/gmp-metrics" -G --data-urlencode "project=${PROJECT_A:-}" \
+# (Capture first: `curl | grep -q` under pipefail fails when grep exits early.)
+gmp_body=$(curl -sf "$EXP/gmp-metrics" -G --data-urlencode "project=${PROJECT_A:-}" \
   --data-urlencode 'query=compute_googleapis_com:instance_network_sent_bytes_count' \
-  --data-urlencode 'time_offset=4m' | grep -q '^# TYPE .* gauge' && ok "gmp delta is gauge" || bad "gmp delta not gauge (set PROJECT_A in env)"
-cm_type=$(curl -sf "$EXP/metrics" -G --data-urlencode "project=${PROJECT_A:-}" \
-  --data-urlencode 'metric_type=compute.googleapis.com/instance/network/sent_bytes_count' | grep -m1 '^# TYPE' | awk '{print $4}')
+  --data-urlencode 'time_offset=4m')
+grep -q '^# TYPE .* gauge' <<<"$gmp_body" && ok "gmp delta is gauge" || bad "gmp delta not gauge (set PROJECT_A in env)"
+cm_body=$(curl -sf "$EXP/metrics" -G --data-urlencode "project=${PROJECT_A:-}" \
+  --data-urlencode 'metric_type=compute.googleapis.com/instance/network/sent_bytes_count')
+cm_type=$(grep -m1 '^# TYPE' <<<"$cm_body" | awk '{print $4}')
 echo "INFO  cm delta exported as: ${cm_type:-<none>} (gauge expected after fix)"
 
 # Series churn: wait two more scrape intervals, series count must not grow.
