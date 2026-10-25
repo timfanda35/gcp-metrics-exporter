@@ -38,3 +38,5 @@ Thumbs.db
 # Service account credentials
 *.json
 !config/*.json
+!config/e2e/grafana/dashboards/*.json
+.env.e2e
