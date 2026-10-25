@@ -37,7 +37,7 @@ func TestCollector_Collect(t *testing.T) {
 				{Labels: map[string]string{"__name__": "up", "job": "a"}, Value: 1},
 			},
 			wantFams:    1,
-			wantMetrics: map[string]int{"up": 1},
+			wantMetrics: map[string]int{"gcp_up": 1},
 		},
 		{
 			name: "multiple series same family",
@@ -46,7 +46,7 @@ func TestCollector_Collect(t *testing.T) {
 				{Labels: map[string]string{"__name__": "http_requests_total", "job": "b"}, Value: 20},
 			},
 			wantFams:    1,
-			wantMetrics: map[string]int{"http_requests_total": 2},
+			wantMetrics: map[string]int{"gcp_http_requests_total": 2},
 		},
 		{
 			name: "multiple families",
@@ -55,7 +55,7 @@ func TestCollector_Collect(t *testing.T) {
 				{Labels: map[string]string{"__name__": "go_goroutines", "job": "a"}, Value: 5},
 			},
 			wantFams:    2,
-			wantMetrics: map[string]int{"up": 1, "go_goroutines": 1},
+			wantMetrics: map[string]int{"gcp_up": 1, "gcp_go_goroutines": 1},
 		},
 		{
 			name: "drops samples without __name__",
@@ -64,7 +64,7 @@ func TestCollector_Collect(t *testing.T) {
 				{Labels: map[string]string{"__name__": "up", "job": "b"}, Value: 1},
 			},
 			wantFams:    1,
-			wantMetrics: map[string]int{"up": 1},
+			wantMetrics: map[string]int{"gcp_up": 1},
 		},
 		{
 			name:      "propagates client error",
@@ -155,7 +155,7 @@ func TestCollector_Collect_NormalizesLabelsAndName(t *testing.T) {
 				"monitored_resource": "gce_instance",
 				"project_id":         "src-project",
 			},
-			wantName:   "compute_googleapis_com_instance_cpu_utilization",
+			wantName:   "gcp_compute_googleapis_com_instance_cpu_utilization",
 			wantLabels: map[string]string{"resource_type": "gce_instance", "project_id": "src-project"},
 			absent:     []string{"monitored_resource"},
 		},
@@ -166,7 +166,7 @@ func TestCollector_Collect_NormalizesLabelsAndName(t *testing.T) {
 				"resource_type":      "keep",
 				"monitored_resource": "other",
 			},
-			wantName:   "m",
+			wantName:   "gcp_m",
 			wantLabels: map[string]string{"resource_type": "keep", "monitored_resource": "other"},
 		},
 	}

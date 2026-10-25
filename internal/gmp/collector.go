@@ -10,6 +10,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// metricNamePrefix is prepended to every exported metric name; it matches the
+// prefix used by the Cloud Monitoring collector.
+const metricNamePrefix = "gcp_"
+
 // Collector converts GMP instant query results into Prometheus MetricFamily
 // values. All metrics are emitted as GAUGE — the point-in-time nature of an
 // instant query carries no cumulative semantics.
@@ -27,8 +31,8 @@ func NewCollector(client Client) *Collector {
 // __name__ label value becomes one family; samples without __name__ are
 // silently dropped. Families preserve the order in which they first appear.
 //
-// Names and labels are normalised to match the Cloud Monitoring backend:
-// ':' in metric names becomes '_', monitored_resource is exposed as
+// Names and labels are normalised to match the Cloud Monitoring backend: names
+// get the "gcp_" prefix, ':' in metric names becomes '_', monitored_resource is exposed as
 // resource_type. project_id is left to the sample (add it with a Prometheus
 // relabel rule when a series lacks it).
 func (c *Collector) Collect(ctx context.Context, project, query string, at time.Time) ([]*dto.MetricFamily, error) {
@@ -45,7 +49,7 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 		if !ok || name == "" {
 			continue
 		}
-		name = strings.ReplaceAll(name, ":", "_")
+		name = metricNamePrefix + strings.ReplaceAll(name, ":", "_")
 
 		fam, exists := families[name]
 		if !exists {

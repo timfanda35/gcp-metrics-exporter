@@ -140,7 +140,8 @@ GET /gmp-metrics?project=my-gcp-project&query=up{job="my-app"}&time_offset=2m
 
 - `project_id`：exporter 只輸出 GCP / GMP 回傳的值，不自行補；缺少時由 Prometheus 端用 `metric_relabel_configs` 補（見 `config/e2e/prometheus.yml.tmpl`）
 - 資源類型 label 統一為 `resource_type`（GMP 的 `monitored_resource` 會被改名；若 sample 已有 `resource_type` 則不改）
-- `/gmp-metrics` 的 metric 名稱中的 `:` 一律轉成 `_`，與 `/metrics` 的 `compute_googleapis_com_...` 命名一致（送進 `query` 的 PromQL 仍用 GMP 原生名稱）
+- 所有 metric 名稱一律加 `gcp_` 前綴（`/metrics` 與 `/gmp-metrics` 皆是，含 GMP 任意 metric，例如 `up` → `gcp_up`）
+- `/gmp-metrics` 的 metric 名稱中的 `:` 一律轉成 `_`，與 `/metrics` 的 `gcp_compute_googleapis_com_...` 命名一致（送進 `query` 的 PromQL 仍用 GMP 原生名稱）
 - exporter 不輸出 `instance` label；Prometheus 端不應再用 relabel 覆寫 `instance`
 
 ### `GET /healthz`

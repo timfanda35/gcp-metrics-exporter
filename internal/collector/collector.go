@@ -521,12 +521,18 @@ func appendLabel(labels []*dto.LabelPair, name, value string) []*dto.LabelPair {
 	})
 }
 
+// metricNamePrefix is prepended to every exported metric name so GCP-sourced
+// series are recognisable (and cannot collide with the exporter's own or a
+// scraper's metrics). /gmp-metrics uses the same prefix.
+const metricNamePrefix = "gcp_"
+
 // promMetricName converts a GCP metric type into a Prometheus-safe metric
-// name by replacing "/", ".", and "-" with "_". No fixed prefix is added —
-// the GCP namespace already disambiguates ("compute_googleapis_com_...").
+// name: "/", "." and "-" become "_" and [metricNamePrefix] is prepended
+// ("gcp_compute_googleapis_com_...").
 func promMetricName(metricType string) string {
 	var b strings.Builder
-	b.Grow(len(metricType))
+	b.Grow(len(metricNamePrefix) + len(metricType))
+	b.WriteString(metricNamePrefix)
 	for _, r := range metricType {
 		switch r {
 		case '/', '.', '-':

@@ -199,7 +199,7 @@ func TestCollect_GaugeInt64Double(t *testing.T) {
 				t.Fatalf("want 1 family, got %d", len(fams))
 			}
 			fam := fams[0]
-			if got := fam.GetName(); got != "compute_googleapis_com_instance_cpu_utilization" {
+			if got := fam.GetName(); got != "gcp_compute_googleapis_com_instance_cpu_utilization" {
 				t.Errorf("family name = %q", got)
 			}
 			if got := fam.GetType(); got != dto.MetricType_GAUGE {

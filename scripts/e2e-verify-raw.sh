@@ -31,7 +31,7 @@ for job, scale in (("cm-delta-raw", 1.0), ("cm-delta-rate", 60.0)):
     compared = missing = bad = 0
     newest = 0
     for metric in ("sent_bytes_count", "received_bytes_count"):
-        for s in q(f'compute_googleapis_com_instance_network_{metric}{{job="{job}"}}[20m]'):
+        for s in q(f'gcp_compute_googleapis_com_instance_network_{metric}{{job="{job}"}}[20m]'):
             m = s["metric"]
             for ts, val in s["values"]:
                 key = (m["project_id"], metric, m.get("instance_name", ""), int(round(float(ts))))
