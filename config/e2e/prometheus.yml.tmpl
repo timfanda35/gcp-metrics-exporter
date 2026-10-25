@@ -52,25 +52,35 @@ scrape_configs:
     metric_relabel_configs: *project_id_fill
     relabel_configs: *cm_relabel
 
-  # KNOWN-BAD: ALIGN_NONE keeps the DELTA kind, so the exporter emits a COUNTER with a
-  # start_time_unix label that changes between scrapes (series churn). Kept to show the
-  # problem; excluded from the churn check in scripts/e2e-check.sh.
-  - job_name: cm-delta-none
+  # Correct DELTA, bytes per 60s sample period: ALIGN_NONE returns the raw points, exported as a
+  # gauge. alignment_period = sample period and emit_timestamps=true store each value at its real
+  # point time (a few minutes behind scrape time because of GCP's ingest delay).
+  - job_name: cm-delta-raw
     metrics_path: /metrics
     params:
       aligner: ["ALIGN_NONE"]
+      interval: ["10m"]
+      alignment_period: ["60s"]
+      emit_timestamps: ["true"]
     static_configs:
       - targets:
           - "__PROJECT_A__;compute.googleapis.com/instance/network/received_bytes_count"
           - "__PROJECT_A__;compute.googleapis.com/instance/network/sent_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/received_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/sent_bytes_count"
     metric_relabel_configs: *project_id_fill
     relabel_configs: *cm_relabel
 
-  # Cloud Monitoring DELTA aligned server-side to a per-second rate (GAUGE-shaped workaround candidate).
+  # Correct DELTA, bytes/s: ALIGN_RATE over a 60s alignment period equals value/60 exactly. (With
+  # the default 5m alignment period the not-yet-ingested tail of the window is still divided in,
+  # which understated the rate by ~60%.)
   - job_name: cm-delta-rate
     metrics_path: /metrics
     params:
       aligner: ["ALIGN_RATE"]
+      interval: ["10m"]
+      alignment_period: ["60s"]
+      emit_timestamps: ["true"]
     static_configs:
       - targets:
           - "__PROJECT_A__;compute.googleapis.com/instance/network/received_bytes_count"

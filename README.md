@@ -155,9 +155,28 @@ GMP's PromQL API can also query Cloud Monitoring's built-in system metrics (`com
 | `group_by` | no | — | Comma-separated group-by fields (only when `reducer != REDUCE_NONE`) |
 | `interval` | no | `5m` | Query window (Go duration: `30s`, `5m`, `1h`) |
 | `alignment_period` | no | = `interval` | Alignment period |
+| `emit_timestamps` | no | `false` | Stamp each sample with the end time of its point instead of scrape time, and end the query window on an `alignment_period` boundary |
 | `impersonate_sa` | no | — | Override the impersonation target for this request |
 
 Response: `text/plain; version=0.0.4; charset=utf-8` (Prometheus exposition format).
+
+Metric kinds map to Prometheus types as: `GAUGE` and `DELTA` → gauge, `CUMULATIVE` → counter (with a `start_time_unix` label), `DISTRIBUTION` → histogram.
+
+#### Getting correct DELTA values (e.g. VM network traffic)
+
+A `DELTA` point is the amount during one sample period (60s for `network/*_bytes_count`), so it is exported as a gauge holding the newest point. Two things decide whether the number and its time are right:
+
+- **Align to the sample period.** The default `alignment_period` equals `interval` (5m). Cloud Monitoring data arrives about 3–4 minutes late, so the tail of that window is empty, yet it still counts towards the bucket: measured `ALIGN_RATE` came out ~60% too low. With `alignment_period=60s`, `ALIGN_RATE` equals `delta / 60` exactly and `ALIGN_MEAN` equals the raw point. Use an `interval` larger than the ingest delay plus one period (e.g. `10m`).
+- **Store the value at its real time.** Without `emit_timestamps=true`, Prometheus stamps samples with scrape time, so graphs lag the real traffic by the ingest delay. With it, each sample carries its point's end time.
+
+```bash
+# bytes per 60s, at the real time
+curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googleapis.com/instance/network/sent_bytes_count&aligner=ALIGN_NONE&interval=10m&alignment_period=60s&emit_timestamps=true'
+# bytes per second
+curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googleapis.com/instance/network/sent_bytes_count&aligner=ALIGN_RATE&interval=10m&alignment_period=60s&emit_timestamps=true'
+```
+
+`scripts/e2e-verify-raw.sh` compares what Prometheus stored for these two settings against the raw Cloud Monitoring points (see `docker-compose.e2e.yaml`).
 
 The `metric.type` filter clause is always prepended automatically; the `filter` parameter is AND-composed onto it:
 

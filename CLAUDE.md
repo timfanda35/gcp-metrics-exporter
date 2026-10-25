@@ -18,7 +18,7 @@
 |---|---|---|
 | 資料來源 | Cloud Monitoring（`ListTimeSeries` gRPC API） | GCP Managed Service for Prometheus（GMP）的 Prometheus-compatible instant query HTTP API |
 | 查詢語言 | Cloud Monitoring filter + aligner/reducer | PromQL |
-| 結果型別 | 依 GCP metric kind 轉換為 Gauge/Counter/Histogram | 一律轉換為 Prometheus gauge（instant query 無 cumulative 語意，不做型別轉換） |
+| 結果型別 | 依 GCP metric kind 轉換：GAUGE／DELTA → Gauge、CUMULATIVE → Counter、DISTRIBUTION → Histogram | 一律轉換為 Prometheus gauge（instant query 無 cumulative 語意，不做型別轉換） |
 
 ---
 
@@ -65,7 +65,7 @@ gcp-metrics-exporter/
 ### `internal/collector`
 - 接受 `ProjectID`、`MetricType`、`Filter`、`Aligner`、`Reducer`、`GroupByFields`、`Interval`、`AlignmentPeriod` 等參數
 - 呼叫 `cloud.google.com/go/monitoring/apiv3/v2` 的 `ListTimeSeries`
-- 將 `TimeSeries` 轉換為 Prometheus `Metric`（GaugeVec / CounterVec / Histogram，依 GCP metric kind 對應）
+- 將 `TimeSeries` 轉換為 Prometheus `Metric`（GAUGE 與 DELTA → gauge、CUMULATIVE → counter、DISTRIBUTION → histogram）
 - 每次 `/metrics` 請求都是 **即時查詢**（stateless）
 
 ### `internal/gmp`
@@ -100,6 +100,7 @@ gcp-metrics-exporter/
 | `group_by`           | ❌   | 逗號分隔的 group-by fields，僅當 `reducer != REDUCE_NONE` 才有效 |
 | `interval`           | ❌   | 查詢時間視窗（end-start），預設 `5m`（Go duration 格式） |
 | `alignment_period`   | ❌   | 對齊週期，預設等於 `interval`（Go duration 格式） |
+| `emit_timestamps`    | ❌   | `true` 時每筆 sample 帶上其 point 的結束時間（而非 scrape 時間），且查詢視窗結束時間會對齊 `alignment_period`；預設 `false` |
 | `impersonate_sa`     | ❌   | 要 impersonate 的 service account email |
 
 **回應格式**：Prometheus text format（`text/plain; version=0.0.4; charset=utf-8`）
@@ -108,6 +109,14 @@ gcp-metrics-exporter/
 ```
 GET /metrics?project=my-gcp-project&metric_type=compute.googleapis.com/instance/cpu/utilization&interval=10m
 ```
+
+**資料正確性（DELTA，例如 VM 網路流量）**
+
+- `DELTA` 的 point 是「一個取樣週期內的量」，不是累計值。`ALIGN_NONE`／`ALIGN_DELTA` 保留 DELTA kind 時，輸出為 **gauge**（取最新一個 point），不加總、不加 `start_time_unix`。
+- `CUMULATIVE` 仍輸出 counter 並帶 `start_time_unix`（計數器歸零時間，生命週期內穩定）。
+- 預設的 `alignment_period` 等於 `interval`（5m）會把「尚未 ingest 的視窗尾端」也算進去：`ALIGN_RATE` 會被低估（實測約 60%）、`ALIGN_MEAN` 的時間代表性也不明確。要精確值時，把 `alignment_period` 設成該 metric 的取樣週期（網路流量為 `60s`），`interval` 設大於 ingest 延遲加一個週期（例如 `10m`）。
+- GCP 資料有 ingest 延遲（VM 網路約 3–4 分鐘），Prometheus 預設以 scrape 時間存值，曲線會整體偏移；加 `emit_timestamps=true` 可存回真實時間。
+- 建議組合（bytes per 60s）：`aligner=ALIGN_NONE&interval=10m&alignment_period=60s&emit_timestamps=true`；（bytes/s）：`aligner=ALIGN_RATE`，其餘相同。`ALIGN_RATE` 搭配 `60s` 的值恰為 `delta / 60`。
 
 ### `GET /gmp-metrics`
 

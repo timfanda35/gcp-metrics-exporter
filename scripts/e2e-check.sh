@@ -17,7 +17,7 @@ q()   { curl -sf --get "$PROM/api/v1/query" --data-urlencode "query=$1" | jq -r 
 curl -sf "$EXP/healthz" >/dev/null && ok "exporter /healthz" || bad "exporter /healthz"
 
 echo "waiting ${WAIT}s for scrapes..."; sleep "$WAIT"
-series_before=$(q 'count({job=~"cm-.*|gmp-.*",job!="cm-delta-none",__name__!~"up|scrape_.*"})' '.data.result[0].value[1] // "0"')
+series_before=$(q 'count({job=~"cm-.*|gmp-.*",__name__!~"up|scrape_.*"})' '.data.result[0].value[1] // "0"')
 
 # Every e2e target must be up.
 # Expected target count is derived from the config (static targets + the gmp-agg job).
@@ -52,18 +52,14 @@ gmp_body=$(curl -sf "$EXP/gmp-metrics" -G --data-urlencode "project=${PROJECT_A:
   --data-urlencode 'query=compute_googleapis_com:instance_network_sent_bytes_count' \
   --data-urlencode 'time_offset=4m')
 grep -q '^# TYPE .* gauge' <<<"$gmp_body" && ok "gmp delta is gauge" || bad "gmp delta not gauge (set PROJECT_A in env)"
-cm_body=$(curl -sf "$EXP/metrics" -G --data-urlencode "project=${PROJECT_A:-}" \
+cm_body=$(curl -sf "$EXP/metrics" -G --data-urlencode "project=${PROJECT_A:-}" --data-urlencode 'aligner=ALIGN_NONE' \
   --data-urlencode 'metric_type=compute.googleapis.com/instance/network/sent_bytes_count')
 cm_type=$(grep -m1 '^# TYPE' <<<"$cm_body" | awk '{print $4}')
-echo "INFO  cm delta exported as: ${cm_type:-<none>} (gauge expected after fix)"
+[ "$cm_type" = "gauge" ] && ok "cm DELTA with ALIGN_NONE is gauge" || bad "cm DELTA with ALIGN_NONE exported as ${cm_type:-<none>}, want gauge"
 
 # Series churn: wait two more scrape intervals, series count must not grow.
 sleep 130
-series_after=$(q 'count({job=~"cm-.*|gmp-.*",job!="cm-delta-none",__name__!~"up|scrape_.*"})' '.data.result[0].value[1] // "0"')
-none_n=$(q 'count(last_over_time({job="cm-delta-none",__name__!~"up|scrape_.*"}[15m]))' '.data.result[0].value[1] // "0"')
-none_types=$(curl -sf "$EXP/metrics" -G --data-urlencode "project=${PROJECT_A:-}" --data-urlencode 'aligner=ALIGN_NONE' \
-  --data-urlencode 'metric_type=compute.googleapis.com/instance/network/sent_bytes_count' | grep -m1 '^# TYPE' | awk '{print $4}')
-echo "INFO  cm-delta-none (known-bad): exported as ${none_types:-<none>}, $none_n distinct series in 15m (2 targets; grows when start_time_unix changes)"
+series_after=$(q 'count({job=~"cm-.*|gmp-.*",__name__!~"up|scrape_.*"})' '.data.result[0].value[1] // "0"')
 if [ "$series_after" = "0" ]; then bad "no series at all (targets failing?)"
 elif [ "$series_before" = "$series_after" ]; then ok "series count stable ($series_after)"
 else bad "series churn: $series_before -> $series_after"; fi
