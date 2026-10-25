@@ -270,15 +270,16 @@ func TestCollect_CumulativeStartTimeUnix(t *testing.T) {
 	}
 }
 
-// TestCollect_DeltaSummation exercises required test case 3.
-func TestCollect_DeltaSummation(t *testing.T) {
+// TestCollect_DeltaLatestPointGauge: a DELTA series (ALIGN_NONE/ALIGN_DELTA)
+// is exported as a gauge holding the newest point's value. Summing points or
+// labelling with a per-scrape start time made the series non-monotonic and
+// created a new series on every scrape.
+func TestCollect_DeltaLatestPointGauge(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
-	// GCP returns most-recent-first. Build three points whose start
-	// times step backwards from now.
+	// GCP returns most-recent-first.
 	p1 := mkPoint(now.Add(-2*time.Minute), now.Add(-time.Minute), doubleValue(1.5))
 	p2 := mkPoint(now.Add(-3*time.Minute), now.Add(-2*time.Minute), doubleValue(2.5))
-	earliestStart := now.Add(-4 * time.Minute)
-	p3 := mkPoint(earliestStart, now.Add(-3*time.Minute), doubleValue(0.25))
+	p3 := mkPoint(now.Add(-4*time.Minute), now.Add(-3*time.Minute), doubleValue(0.25))
 
 	fake := &fakeMetricServer{
 		listFn: func(_ context.Context, _ *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
@@ -307,16 +308,91 @@ func TestCollect_DeltaSummation(t *testing.T) {
 	if len(fams) != 1 {
 		t.Fatalf("want 1 family, got %d", len(fams))
 	}
-	if fams[0].GetType() != dto.MetricType_COUNTER {
-		t.Fatalf("want COUNTER, got %v", fams[0].GetType())
+	if fams[0].GetType() != dto.MetricType_GAUGE {
+		t.Fatalf("want GAUGE, got %v", fams[0].GetType())
 	}
 	m := fams[0].GetMetric()[0]
-	if got := m.GetCounter().GetValue(); math.Abs(got-(1.5+2.5+0.25)) > 1e-9 {
-		t.Errorf("counter value = %v, want 4.25", got)
+	if got := m.GetGauge().GetValue(); math.Abs(got-1.5) > 1e-9 {
+		t.Errorf("gauge value = %v, want newest point 1.5", got)
 	}
-	wantStart := strconv.FormatInt(earliestStart.Unix(), 10)
-	if got := labelValue(m, "start_time_unix"); got != wantStart {
-		t.Errorf("start_time_unix = %q, want %q", got, wantStart)
+	if got := labelValue(m, "start_time_unix"); got != "" {
+		t.Errorf("start_time_unix = %q, want no such label", got)
+	}
+}
+
+// TestCollect_EmitTimestamps: with EmitTimestamps the sample carries the
+// newest point's end time; without it no timestamp is set.
+func TestCollect_EmitTimestamps(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	end := now.Add(-4 * time.Minute)
+	for _, emit := range []bool{false, true} {
+		emit := emit
+		t.Run(strconv.FormatBool(emit), func(t *testing.T) {
+			fake := &fakeMetricServer{
+				listFn: func(_ context.Context, _ *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
+					return &monitoringpb.ListTimeSeriesResponse{
+						TimeSeries: []*monitoringpb.TimeSeries{{
+							Metric:     &metricpb.Metric{Type: "x"},
+							Resource:   &monitoredres.MonitoredResource{Type: "global"},
+							MetricKind: metricpb.MetricDescriptor_GAUGE,
+							ValueType:  metricpb.MetricDescriptor_DOUBLE,
+							Points: []*monitoringpb.Point{
+								mkPoint(end.Add(-time.Minute), end, doubleValue(3)),
+								mkPoint(end.Add(-2*time.Minute), end.Add(-time.Minute), doubleValue(2)),
+							},
+						}},
+					}, nil
+				},
+			}
+			client, cleanup := startFakeServer(t, fake)
+			t.Cleanup(cleanup)
+
+			c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now)})
+			fams, err := c.Collect(context.Background(), QueryParams{ProjectID: "p", MetricType: "x", EmitTimestamps: emit})
+			if err != nil || len(fams) != 1 {
+				t.Fatalf("Collect: fams=%d err=%v", len(fams), err)
+			}
+			m := fams[0].GetMetric()[0]
+			if !emit {
+				if m.TimestampMs != nil {
+					t.Errorf("TimestampMs = %v, want nil", m.GetTimestampMs())
+				}
+				return
+			}
+			if got, want := m.GetTimestampMs(), end.UnixMilli(); got != want {
+				t.Errorf("TimestampMs = %d, want newest point end %d", got, want)
+			}
+		})
+	}
+}
+
+// TestBuildRequest_EmitTimestampsAlignsEnd: buckets must end on an
+// alignment-period boundary so their timestamps line up with GCP's own
+// sample times. Without EmitTimestamps the end stays at "now".
+func TestBuildRequest_EmitTimestampsAlignsEnd(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 26, 0, time.UTC)
+	c := NewGCPCollector(nil, Options{Now: fixedClock(now)})
+	base := QueryParams{ProjectID: "p", MetricType: "x", Interval: 10 * time.Minute, AlignmentPeriod: time.Minute}
+
+	req, err := c.buildRequest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.GetInterval().GetEndTime().AsTime(); !got.Equal(now) {
+		t.Errorf("end without EmitTimestamps = %v, want %v", got, now)
+	}
+
+	base.EmitTimestamps = true
+	req, err = c.buildRequest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEnd := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	if got := req.GetInterval().GetEndTime().AsTime(); !got.Equal(wantEnd) {
+		t.Errorf("end = %v, want %v", got, wantEnd)
+	}
+	if got := req.GetInterval().GetStartTime().AsTime(); !got.Equal(wantEnd.Add(-10 * time.Minute)) {
+		t.Errorf("start = %v, want %v", got, wantEnd.Add(-10*time.Minute))
 	}
 }
 

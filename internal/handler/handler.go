@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -150,6 +151,7 @@ type requestParams struct {
 	groupBy         []string
 	interval        time.Duration
 	alignmentPeriod time.Duration
+	emitTimestamps  bool
 	impersonateSA   string
 }
 
@@ -218,6 +220,15 @@ func parseRequest(r *http.Request, limits Limits) (*requestParams, string, int) 
 		alignment = d
 	}
 
+	emitTimestamps := false
+	if v := q.Get("emit_timestamps"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Sprintf("invalid emit_timestamps %q: must be true or false", v), http.StatusBadRequest
+		}
+		emitTimestamps = b
+	}
+
 	impersonate := q.Get("impersonate_sa")
 	if impersonate == "" {
 		impersonate = limits.DefaultImpersonateSA
@@ -232,6 +243,7 @@ func parseRequest(r *http.Request, limits Limits) (*requestParams, string, int) 
 		groupBy:         groupBy,
 		interval:        interval,
 		alignmentPeriod: alignment,
+		emitTimestamps:  emitTimestamps,
 		impersonateSA:   impersonate,
 	}, "", 0
 }
@@ -297,6 +309,7 @@ func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		GroupByFields:   params.groupBy,
 		Interval:        params.interval,
 		AlignmentPeriod: params.alignmentPeriod,
+		EmitTimestamps:  params.emitTimestamps,
 	})
 	gcpLatency := elapsedMs(h.now(), gcpStart)
 

@@ -97,6 +97,13 @@ type QueryParams struct {
 	// AlignmentPeriod is the alignment bucket width. Zero defaults to
 	// Interval.
 	AlignmentPeriod time.Duration
+
+	// EmitTimestamps stamps every sample with the end time of the point it
+	// was built from (instead of leaving Prometheus to use scrape time), and
+	// ends the query window on an AlignmentPeriod boundary so the aligned
+	// buckets coincide with GCP's own sample times. Set AlignmentPeriod to the
+	// metric's sample period (e.g. 60s) so each bucket is exactly one point.
+	EmitTimestamps bool
 }
 
 // Options configures a [GCPCollector].
@@ -228,6 +235,12 @@ func (c *GCPCollector) Collect(ctx context.Context, params QueryParams) ([]*dto.
 			continue
 		}
 
+		if params.EmitTimestamps {
+			if pts := series.GetPoints(); len(pts) > 0 {
+				converted.metric.TimestampMs = proto.Int64(pointEndMillis(pts[0]))
+			}
+		}
+
 		key := familyKey{
 			name:      converted.familyName,
 			kind:      series.GetMetricKind(),
@@ -290,10 +303,13 @@ func (c *GCPCollector) buildRequest(params QueryParams) (*monitoringpb.ListTimeS
 		return nil, fmt.Errorf("invalid reducer %q: %w", reducerName, ErrInvalidAggregation)
 	}
 
-	now := c.now()
+	end := c.now()
+	if params.EmitTimestamps {
+		end = end.Truncate(alignment)
+	}
 	timeInterval := &monitoringpb.TimeInterval{
-		StartTime: timestamppb.New(now.Add(-interval)),
-		EndTime:   timestamppb.New(now),
+		StartTime: timestamppb.New(end.Add(-interval)),
+		EndTime:   timestamppb.New(end),
 	}
 
 	agg := &monitoringpb.Aggregation{
@@ -377,7 +393,11 @@ func convertSeries(metricType string, series *monitoringpb.TimeSeries) (converte
 	}
 
 	switch kind {
-	case metricpb.MetricDescriptor_GAUGE:
+	case metricpb.MetricDescriptor_GAUGE, metricpb.MetricDescriptor_DELTA:
+		// DELTA points hold the amount during one sample period, so they are
+		// not a running total: export the newest point as a gauge. (Summing
+		// the window or labelling it with a start time made the series
+		// non-monotonic and new on every scrape.)
 		points := series.GetPoints()
 		if len(points) == 0 {
 			return convertedMetric{}, false
@@ -411,34 +431,6 @@ func convertSeries(metricType string, series *monitoringpb.TimeSeries) (converte
 			},
 		}, true
 
-	case metricpb.MetricDescriptor_DELTA:
-		// DELTA metrics: GCP returns one delta value per alignment bucket.
-		// We sum across all returned points so a Prometheus counter sees
-		// the total delta covered by the response window. The earliest
-		// point's start time anchors the synthetic counter so a restart
-		// (start time changes) appears as a new series and Prometheus does
-		// not report a false reset.
-		points := series.GetPoints()
-		if len(points) == 0 {
-			return convertedMetric{}, false
-		}
-		var sum float64
-		for _, p := range points {
-			sum += scalarValue(p, valueType)
-		}
-		// Points are most-recent-first; earliest is the last element.
-		earliest := points[len(points)-1]
-		startUnix := pointStartUnix(earliest)
-		labels = appendLabel(labels, "start_time_unix", strconv.FormatInt(startUnix, 10))
-		return convertedMetric{
-			familyName: name,
-			familyType: dto.MetricType_COUNTER,
-			metric: &dto.Metric{
-				Label:   labels,
-				Counter: &dto.Counter{Value: proto.Float64(sum)},
-			},
-		}, true
-
 	default:
 		slog.Debug("collector: skipping series with unsupported metric kind",
 			"metric_type", metricType,
@@ -462,6 +454,12 @@ func scalarValue(p *monitoringpb.Point, valueType metricpb.MetricDescriptor_Valu
 	default:
 		return 0
 	}
+}
+
+// pointEndMillis returns the end time of a Point in Unix milliseconds, or 0
+// when the interval or end timestamp is missing.
+func pointEndMillis(p *monitoringpb.Point) int64 {
+	return p.GetInterval().GetEndTime().AsTime().UnixMilli()
 }
 
 // pointStartUnix returns the Unix start time of a Point, defaulting to 0

@@ -213,6 +213,40 @@ func TestServeHTTP_Success(t *testing.T) {
 	}
 }
 
+// emit_timestamps defaults to false, parses booleans, and rejects garbage.
+func TestServeHTTP_EmitTimestamps(t *testing.T) {
+	cases := []struct {
+		query    string
+		wantCode int
+		want     bool
+	}{
+		{"", http.StatusOK, false},
+		{"&emit_timestamps=true", http.StatusOK, true},
+		{"&emit_timestamps=false", http.StatusOK, false},
+		{"&emit_timestamps=maybe", http.StatusBadRequest, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.query, func(t *testing.T) {
+			fc := &fakeCollector{
+				collectFn: func(_ context.Context, _ collector.QueryParams) ([]*dto.MetricFamily, error) {
+					return staticGauge("test_metric", 1), nil
+				},
+			}
+			h := newHandler(t, fc, Limits{})
+			req := httptest.NewRequest(http.MethodGet, "/metrics?project=p&metric_type=m"+tc.query, nil)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d", rr.Code, tc.wantCode)
+			}
+			if tc.wantCode == http.StatusOK && fc.lastParams().EmitTimestamps != tc.want {
+				t.Errorf("EmitTimestamps = %v, want %v", fc.lastParams().EmitTimestamps, tc.want)
+			}
+		})
+	}
+}
+
 // Test 5: impersonate_sa query param overrides the env-derived default.
 func TestServeHTTP_ImpersonationPrecedence(t *testing.T) {
 	cr := &captureRecords{}
