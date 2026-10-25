@@ -3,6 +3,7 @@ package gmp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
@@ -25,6 +26,11 @@ func NewCollector(client Client) *Collector {
 // the resulting vector into [*dto.MetricFamily] slices. Each unique
 // __name__ label value becomes one family; samples without __name__ are
 // silently dropped. Families preserve the order in which they first appear.
+//
+// Names and labels are normalised to match the Cloud Monitoring backend:
+// ':' in metric names becomes '_', monitored_resource is exposed as
+// resource_type, and project_id is filled from project when the sample has
+// none.
 func (c *Collector) Collect(ctx context.Context, project, query string, at time.Time) ([]*dto.MetricFamily, error) {
 	samples, err := c.client.Query(ctx, project, query, at)
 	if err != nil {
@@ -39,6 +45,7 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 		if !ok || name == "" {
 			continue
 		}
+		name = strings.ReplaceAll(name, ":", "_")
 
 		fam, exists := families[name]
 		if !exists {
@@ -51,17 +58,7 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 			order = append(order, name)
 		}
 
-		labels := make([]*dto.LabelPair, 0, len(s.Labels))
-		for k, v := range s.Labels {
-			if k == "__name__" {
-				continue
-			}
-			k, v := k, v
-			labels = append(labels, &dto.LabelPair{
-				Name:  proto.String(k),
-				Value: proto.String(v),
-			})
-		}
+		labels := normalizeLabels(s.Labels, project)
 
 		fam.Metric = append(fam.Metric, &dto.Metric{
 			Label: labels,
@@ -74,4 +71,31 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 		out = append(out, families[name])
 	}
 	return out, nil
+}
+
+// normalizeLabels converts a GMP sample's labels into label pairs, dropping
+// __name__, renaming monitored_resource to resource_type (unless the sample
+// already has one) and adding project_id when missing.
+func normalizeLabels(in map[string]string, project string) []*dto.LabelPair {
+	_, hasResourceType := in["resource_type"]
+	labels := make([]*dto.LabelPair, 0, len(in)+1)
+	for k, v := range in {
+		if k == "__name__" {
+			continue
+		}
+		if k == "monitored_resource" && !hasResourceType {
+			k = "resource_type"
+		}
+		labels = append(labels, &dto.LabelPair{
+			Name:  proto.String(k),
+			Value: proto.String(v),
+		})
+	}
+	if _, ok := in["project_id"]; !ok {
+		labels = append(labels, &dto.LabelPair{
+			Name:  proto.String("project_id"),
+			Value: proto.String(project),
+		})
+	}
+	return labels
 }

@@ -127,6 +127,13 @@ GET /metrics?project=my-gcp-project&metric_type=compute.googleapis.com/instance/
 GET /gmp-metrics?project=my-gcp-project&query=up{job="my-app"}&time_offset=2m
 ```
 
+### Label / 命名規範（`/metrics` 與 `/gmp-metrics` 一致）
+
+- 每條 series 一定帶 `project_id`：優先使用 GCP 回傳的值；沒有時以請求的 `project` 參數補上
+- 資源類型 label 統一為 `resource_type`（GMP 的 `monitored_resource` 會被改名；若 sample 已有 `resource_type` 則不改）
+- `/gmp-metrics` 的 metric 名稱中的 `:` 一律轉成 `_`，與 `/metrics` 的 `compute_googleapis_com_...` 命名一致（送進 `query` 的 PromQL 仍用 GMP 原生名稱）
+- exporter 不輸出 `instance` label；Prometheus 端不應再用 relabel 覆寫 `instance`
+
 ### `GET /healthz`
 回傳 `200 OK` + `{"status":"ok"}`
 

@@ -67,14 +67,14 @@ func TestCollector_Collect(t *testing.T) {
 			wantMetrics: map[string]int{"up": 1},
 		},
 		{
-			name:    "propagates client error",
-			samples: nil,
+			name:      "propagates client error",
+			samples:   nil,
 			clientErr: errors.New("query failed"),
-			wantErr: true,
+			wantErr:   true,
 		},
 		{
-			name:    "empty result",
-			samples: []Sample{},
+			name:     "empty result",
+			samples:  []Sample{},
 			wantFams: 0,
 		},
 	}
@@ -135,5 +135,73 @@ func TestCollector_Collect_NoNameLabel(t *testing.T) {
 		t.Error("metric must have Gauge set")
 	} else if g.GetValue() != 42 {
 		t.Errorf("Gauge.Value = %v, want 42", g.GetValue())
+	}
+}
+
+func TestCollector_Collect_NormalizesLabelsAndName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		labels     map[string]string
+		wantName   string
+		wantLabels map[string]string
+		absent     []string
+	}{
+		{
+			name: "colon name, monitored_resource renamed, project_id kept",
+			labels: map[string]string{
+				"__name__":           "compute_googleapis_com:instance_cpu_utilization",
+				"monitored_resource": "gce_instance",
+				"project_id":         "src-project",
+			},
+			wantName:   "compute_googleapis_com_instance_cpu_utilization",
+			wantLabels: map[string]string{"resource_type": "gce_instance", "project_id": "src-project"},
+			absent:     []string{"monitored_resource"},
+		},
+		{
+			name:       "project_id injected from request when missing",
+			labels:     map[string]string{"__name__": "up", "job": "a"},
+			wantName:   "up",
+			wantLabels: map[string]string{"project_id": "req-project", "job": "a"},
+		},
+		{
+			name: "existing resource_type wins over monitored_resource",
+			labels: map[string]string{
+				"__name__":           "m",
+				"resource_type":      "keep",
+				"monitored_resource": "other",
+			},
+			wantName:   "m",
+			wantLabels: map[string]string{"resource_type": "keep", "monitored_resource": "other", "project_id": "req-project"},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := NewCollector(&fakeClient{samples: []Sample{{Labels: tc.labels, Value: 1}}})
+			fams, err := c.Collect(context.Background(), "req-project", "q", time.Unix(0, 0))
+			if err != nil {
+				t.Fatalf("Collect: %v", err)
+			}
+			if len(fams) != 1 || fams[0].GetName() != tc.wantName {
+				t.Fatalf("families = %v, want one named %q", fams, tc.wantName)
+			}
+			got := map[string]string{}
+			for _, lp := range fams[0].GetMetric()[0].GetLabel() {
+				got[lp.GetName()] = lp.GetValue()
+			}
+			for k, v := range tc.wantLabels {
+				if got[k] != v {
+					t.Errorf("label %s = %q, want %q (all: %v)", k, got[k], v, got)
+				}
+			}
+			for _, k := range tc.absent {
+				if _, ok := got[k]; ok {
+					t.Errorf("label %s should be absent (all: %v)", k, got)
+				}
+			}
+		})
 	}
 }
