@@ -216,7 +216,7 @@
       "uid": "prom-e2e"
      },
      "expr": "up{job=~\"cm-.*|gmp-.*\"}",
-     "legendFormat": "{{job}} {{scrape_project}}",
+     "legendFormat": "{{job}} {{scrape_project}} {{scrape_target}}",
      "refId": "A"
     }
    ]
@@ -278,7 +278,7 @@
       "uid": "prom-e2e"
      },
      "expr": "scrape_duration_seconds{job=~\"cm-.*|gmp-.*\"}",
-     "legendFormat": "{{job}} {{scrape_project}}",
+     "legendFormat": "{{job}} {{scrape_project}} {{scrape_target}}",
      "refId": "A"
     }
    ]

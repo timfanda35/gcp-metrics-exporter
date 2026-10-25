@@ -2,7 +2,8 @@
 # Verifies the e2e stack after `docker compose -f docker-compose.e2e.yaml up -d --build`.
 # Usage: scripts/e2e-check.sh [wait_seconds=200]   (needs curl + jq)
 set -uo pipefail
-# Load PROJECT_A etc. from .env.e2e (without exporting the credentials path elsewhere).
+# Run from the repo root so .env.e2e is found, then load PROJECT_A etc. from it.
+cd "$(dirname "$0")/.."
 if [ -f .env.e2e ]; then set -a; . ./.env.e2e; set +a; fi
 PROM=${PROM:-http://localhost:9090}
 EXP=${EXP:-http://localhost:18080}
@@ -19,8 +20,13 @@ echo "waiting ${WAIT}s for scrapes..."; sleep "$WAIT"
 series_before=$(q 'count({job=~"cm-.*|gmp-.*",__name__!~"up|scrape_.*"})' '.data.result[0].value[1] // "0"')
 
 # Every e2e target must be up.
-down=$(q 'up{job=~"cm-.*|gmp-.*"} == 0' '.data.result[] | .metric.job + " " + .metric.scrape_project')
-[ -z "$down" ] && ok "all targets up" || bad "targets down:"$'\n'"$down"
+# Expected target count is derived from the config (static targets + the gmp-agg job).
+expected=$(grep -c '^ *- "__PROJECT_[AB]__;' config/e2e/prometheus.yml.tmpl)
+expected=$((expected + 1))   # + gmp-agg
+total=$(q 'count(up{job=~"cm-.*|gmp-.*"})' '.data.result[0].value[1] // "0"')
+[ "$total" = "$expected" ] && ok "found all $expected targets" || bad "expected $expected targets, Prometheus reports $total"
+down=$(q 'up{job=~"cm-.*|gmp-.*"} == 0' '.data.result[] | .metric.job + " " + .metric.scrape_project + " " + .metric.scrape_target')
+[ -z "$down" ] && [ "$total" = "$expected" ] && ok "all targets up" || bad "targets down or missing:"$'\n'"$down"
 
 # Prometheus must not have rejected samples.
 for m in prometheus_target_scrapes_sample_out_of_order_total \

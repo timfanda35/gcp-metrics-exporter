@@ -1,7 +1,8 @@
 # Rendered by docker-compose.e2e.yaml (__PROJECT_A__/__PROJECT_B__ -> $PROJECT_A/$PROJECT_B).
 # The exporter emits resource_type on every series; project_id is taken from GCP/GMP when
 # present and otherwise filled by the metric_relabel_configs below. No `instance` relabel
-# is needed (instance stays the exporter address).
+# is needed (instance stays the exporter address); scrape_project + scrape_target keep up/scrape_*
+# series of different targets in the same job distinct.
 # Target encoding: "<project>;<metric_type>" for /metrics, "<project>;<promql>" for /gmp-metrics.
 global:
   scrape_interval: 60s
@@ -33,6 +34,8 @@ scrape_configs:
       # up / scrape_* carry no project_id; keep the scraped project on the target.
       - source_labels: [__param_project]
         target_label: scrape_project
+      - source_labels: [__param_metric_type]
+        target_label: scrape_target
       - target_label: __address__
         replacement: "exporter:8080"
 
@@ -86,6 +89,8 @@ scrape_configs:
       # up / scrape_* carry no project_id; keep the scraped project on the target.
       - source_labels: [__param_project]
         target_label: scrape_project
+      - source_labels: [__param_query]
+        target_label: scrape_target
       - target_label: __address__
         replacement: "exporter:8080"
 
@@ -112,4 +117,5 @@ scrape_configs:
       - targets: ["exporter:8080"]
         labels:
           scrape_project: "__PROJECT_A__"
+          scrape_target: "max by zone (cpu_utilization)"
     metric_relabel_configs: *project_id_fill

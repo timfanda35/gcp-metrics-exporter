@@ -16,6 +16,8 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/adc.json
       DEFAULT_IMPERSONATE_SA: "${IMPERSONATE_SA:-}"
     volumes:
+      # On Linux the exporter runs as UID 65532; a 0600 host file is unreadable there
+      # (chmod 644 a copy, or add `user:` to this service). Docker Desktop/OrbStack map it.
       - ${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS in .env.e2e}:/secrets/adc.json:ro
     ports:
       - "18080:8080"   # host 8080 is often taken; Prometheus uses exporter:8080 internally
@@ -27,7 +29,7 @@ services:
       start_period: 5s
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.13.2
     environment:
       PROJECT_A: "${PROJECT_A:?set PROJECT_A}"
       PROJECT_B: "${PROJECT_B:?set PROJECT_B}"
@@ -48,7 +50,7 @@ services:
         condition: service_healthy
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:12.4.2
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
