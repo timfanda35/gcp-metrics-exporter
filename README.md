@@ -176,6 +176,42 @@ curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googl
 curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googleapis.com/instance/network/sent_bytes_count&aligner=ALIGN_RATE&interval=10m&alignment_period=60s&emit_timestamps=true'
 ```
 
+The same settings as a Prometheus scrape job (one target per project, `<project>;<metric_type>`; `config/e2e/prometheus.yml.tmpl` has the full version with `metric_relabel_configs`):
+
+```yaml
+- job_name: gcp-vm-network
+  metrics_path: /metrics
+  params:
+    aligner: ["ALIGN_RATE"]        # or ALIGN_NONE for bytes per 60s
+    interval: ["10m"]
+    alignment_period: ["60s"]
+    emit_timestamps: ["true"]
+  static_configs:
+    - targets:
+        - "my-project-a;compute.googleapis.com/instance/network/sent_bytes_count"
+        - "my-project-a;compute.googleapis.com/instance/network/received_bytes_count"
+  relabel_configs:
+    - source_labels: [__address__]
+      regex: "([^;]+);(.+)"
+      target_label: __param_project
+      replacement: "$1"
+    - source_labels: [__address__]
+      regex: "([^;]+);(.+)"
+      target_label: __param_metric_type
+      replacement: "$2"
+    - source_labels: [__param_metric_type]   # keeps up{} distinct per target
+      target_label: scrape_target
+    - target_label: __address__
+      replacement: "exporter:8080"
+```
+
+Things to know when using `emit_timestamps=true`:
+
+- Samples appear in Prometheus a few minutes behind the scrape (the ingest delay, ~3–4 minutes for VM network), at their real time. Alerts and dashboards see that lag.
+- Prometheus does not mark timestamped series stale, so a series that disappears (for example a deleted VM) lingers for about 5 minutes.
+- If a scrape returns the same point as the previous one, the identical sample is ignored; this is normal.
+- Set `alignment_period` to the metric's sample period. A larger value puts the timestamp on a bucket end that does not match any single point.
+
 `scripts/e2e-verify-raw.sh` compares what Prometheus stored for these two settings against the raw Cloud Monitoring points (see `docker-compose.e2e.yaml`).
 
 The `metric.type` filter clause is always prepended automatically; the `filter` parameter is AND-composed onto it:
