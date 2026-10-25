@@ -1,6 +1,7 @@
 # Rendered by docker-compose.e2e.yaml (__PROJECT_A__/__PROJECT_B__ -> $PROJECT_A/$PROJECT_B).
-# The exporter itself emits project_id / resource_type / instance_name on every series,
-# so no `instance` relabel is needed (instance stays the exporter address).
+# The exporter emits resource_type on every series; project_id is taken from GCP/GMP when
+# present and otherwise filled by the metric_relabel_configs below. No `instance` relabel
+# is needed (instance stays the exporter address).
 # Target encoding: "<project>;<metric_type>" for /metrics, "<project>;<promql>" for /gmp-metrics.
 global:
   scrape_interval: 60s
@@ -14,6 +15,12 @@ scrape_configs:
       - targets:
           - "__PROJECT_A__;compute.googleapis.com/instance/cpu/utilization"
           - "__PROJECT_B__;compute.googleapis.com/instance/cpu/utilization"
+    metric_relabel_configs: &project_id_fill
+      # Fill project_id from the scraped project only when the series has none.
+      - source_labels: [project_id, scrape_project]
+        regex: ";(.+)"
+        target_label: project_id
+        replacement: "$1"
     relabel_configs: &cm_relabel
       - source_labels: [__address__]
         regex: "([^;]+);(.+)"
@@ -38,6 +45,7 @@ scrape_configs:
           - "__PROJECT_A__;compute.googleapis.com/instance/network/sent_bytes_count"
           - "__PROJECT_B__;compute.googleapis.com/instance/network/received_bytes_count"
           - "__PROJECT_B__;compute.googleapis.com/instance/network/sent_bytes_count"
+    metric_relabel_configs: *project_id_fill
     relabel_configs: *cm_relabel
 
   # Cloud Monitoring DELTA aligned server-side to a per-second rate (GAUGE-shaped workaround candidate).
@@ -51,6 +59,7 @@ scrape_configs:
           - "__PROJECT_A__;compute.googleapis.com/instance/network/sent_bytes_count"
           - "__PROJECT_B__;compute.googleapis.com/instance/network/received_bytes_count"
           - "__PROJECT_B__;compute.googleapis.com/instance/network/sent_bytes_count"
+    metric_relabel_configs: *project_id_fill
     relabel_configs: *cm_relabel
 
   # GMP PromQL: DELTA read as raw gauge, offset past the ~240s ingest delay.
@@ -64,6 +73,7 @@ scrape_configs:
           - "__PROJECT_A__;compute_googleapis_com:instance_network_sent_bytes_count"
           - "__PROJECT_B__;compute_googleapis_com:instance_network_received_bytes_count"
           - "__PROJECT_B__;compute_googleapis_com:instance_network_sent_bytes_count"
+    metric_relabel_configs: *project_id_fill
     relabel_configs: &gmp_relabel
       - source_labels: [__address__]
         regex: "([^;]+);(.+)"
@@ -88,4 +98,18 @@ scrape_configs:
       - targets:
           - "__PROJECT_A__;compute_googleapis_com:instance_cpu_utilization"
           - "__PROJECT_B__;compute_googleapis_com:instance_cpu_utilization"
+    metric_relabel_configs: *project_id_fill
     relabel_configs: *gmp_relabel
+
+  # GMP aggregation drops project_id from the series; the relabel rule must restore it.
+  - job_name: gmp-agg
+    metrics_path: /gmp-metrics
+    params:
+      project: ["__PROJECT_A__"]
+      query: ["max by (__name__, zone) (compute_googleapis_com:instance_cpu_utilization)"]
+      time_offset: ["4m"]
+    static_configs:
+      - targets: ["exporter:8080"]
+        labels:
+          scrape_project: "__PROJECT_A__"
+    metric_relabel_configs: *project_id_fill

@@ -160,12 +160,6 @@ func TestCollector_Collect_NormalizesLabelsAndName(t *testing.T) {
 			absent:     []string{"monitored_resource"},
 		},
 		{
-			name:       "project_id injected from request when missing",
-			labels:     map[string]string{"__name__": "up", "job": "a"},
-			wantName:   "up",
-			wantLabels: map[string]string{"project_id": "req-project", "job": "a"},
-		},
-		{
 			name: "existing resource_type wins over monitored_resource",
 			labels: map[string]string{
 				"__name__":           "m",
@@ -173,7 +167,7 @@ func TestCollector_Collect_NormalizesLabelsAndName(t *testing.T) {
 				"monitored_resource": "other",
 			},
 			wantName:   "m",
-			wantLabels: map[string]string{"resource_type": "keep", "monitored_resource": "other", "project_id": "req-project"},
+			wantLabels: map[string]string{"resource_type": "keep", "monitored_resource": "other"},
 		},
 	}
 	for _, tc := range tests {

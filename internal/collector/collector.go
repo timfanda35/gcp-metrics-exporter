@@ -223,7 +223,7 @@ func (c *GCPCollector) Collect(ctx context.Context, params QueryParams) ([]*dto.
 			return nil, fmt.Errorf("%w: limit=%d", ErrMaxSeriesExceeded, c.maxSeries)
 		}
 
-		converted, ok := convertSeries(params.ProjectID, params.MetricType, series)
+		converted, ok := convertSeries(params.MetricType, series)
 		if !ok {
 			continue
 		}
@@ -334,14 +334,10 @@ type convertedMetric struct {
 
 // convertSeries translates a single TimeSeries into a (family-name,
 // metric) pair. Returns ok=false for unsupported value types so the caller
-// can skip the series without aborting the whole response. projectID is the
-// requested project; it fills the project_id label when the resource has none.
-func convertSeries(projectID, metricType string, series *monitoringpb.TimeSeries) (convertedMetric, bool) {
+// can skip the series without aborting the whole response.
+func convertSeries(metricType string, series *monitoringpb.TimeSeries) (convertedMetric, bool) {
 	name := promMetricName(metricType)
 	labels := buildLabelPairs(series)
-	if !hasLabel(labels, "project_id") {
-		labels = appendLabel(labels, "project_id", projectID)
-	}
 
 	kind := series.GetMetricKind()
 	valueType := series.GetValueType()
@@ -516,16 +512,6 @@ func buildLabelPairs(series *monitoringpb.TimeSeries) []*dto.LabelPair {
 		})
 	}
 	return out
-}
-
-// hasLabel reports whether labels contains a pair named name.
-func hasLabel(labels []*dto.LabelPair, name string) bool {
-	for _, lp := range labels {
-		if lp.GetName() == name {
-			return true
-		}
-	}
-	return false
 }
 
 // appendLabel returns a new slice with a fresh label pair appended; the

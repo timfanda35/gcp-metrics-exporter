@@ -29,8 +29,8 @@ func NewCollector(client Client) *Collector {
 //
 // Names and labels are normalised to match the Cloud Monitoring backend:
 // ':' in metric names becomes '_', monitored_resource is exposed as
-// resource_type, and project_id is filled from project when the sample has
-// none.
+// resource_type. project_id is left to the sample (add it with a Prometheus
+// relabel rule when a series lacks it).
 func (c *Collector) Collect(ctx context.Context, project, query string, at time.Time) ([]*dto.MetricFamily, error) {
 	samples, err := c.client.Query(ctx, project, query, at)
 	if err != nil {
@@ -58,7 +58,7 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 			order = append(order, name)
 		}
 
-		labels := normalizeLabels(s.Labels, project)
+		labels := normalizeLabels(s.Labels)
 
 		fam.Metric = append(fam.Metric, &dto.Metric{
 			Label: labels,
@@ -75,10 +75,10 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 
 // normalizeLabels converts a GMP sample's labels into label pairs, dropping
 // __name__, renaming monitored_resource to resource_type (unless the sample
-// already has one) and adding project_id when missing.
-func normalizeLabels(in map[string]string, project string) []*dto.LabelPair {
+// already has one).
+func normalizeLabels(in map[string]string) []*dto.LabelPair {
 	_, hasResourceType := in["resource_type"]
-	labels := make([]*dto.LabelPair, 0, len(in)+1)
+	labels := make([]*dto.LabelPair, 0, len(in))
 	for k, v := range in {
 		if k == "__name__" {
 			continue
@@ -89,12 +89,6 @@ func normalizeLabels(in map[string]string, project string) []*dto.LabelPair {
 		labels = append(labels, &dto.LabelPair{
 			Name:  proto.String(k),
 			Value: proto.String(v),
-		})
-	}
-	if _, ok := in["project_id"]; !ok {
-		labels = append(labels, &dto.LabelPair{
-			Name:  proto.String("project_id"),
-			Value: proto.String(project),
 		})
 	}
 	return labels

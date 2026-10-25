@@ -46,6 +46,10 @@ if [ "$series_after" = "0" ]; then bad "no series at all (targets failing?)"
 elif [ "$series_before" = "$series_after" ]; then ok "series count stable ($series_after)"
 else bad "series churn: $series_before -> $series_after"; fi
 
+# Series produced by an aggregation (no project_id from GMP) must get project_id via relabel.
+pid=$(q 'count({job="gmp-agg",__name__!~"up|scrape_.*",project_id!=""})' '.data.result[0].value[1] // "0"')
+[ "$pid" != "0" ] && ok "gmp-agg series carry project_id (relabel)" || bad "gmp-agg series missing project_id"
+
 curl -sf "$GRAF/api/health" | jq -e '.database=="ok"' >/dev/null && ok "grafana healthy" || bad "grafana health"
 curl -sf "$GRAF/api/datasources/uid/prom-e2e/health" | jq -e '.status=="OK"' >/dev/null && ok "grafana datasource OK" || bad "grafana datasource"
 curl -sf "$GRAF/api/dashboards/uid/vm-e2e" >/dev/null && ok "dashboard provisioned" || bad "dashboard missing"
