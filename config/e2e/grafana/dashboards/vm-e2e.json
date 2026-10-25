@@ -1,0 +1,287 @@
+{
+ "uid": "vm-e2e",
+ "title": "GCP VM E2E",
+ "schemaVersion": 39,
+ "time": {
+  "from": "now-3h",
+  "to": "now"
+ },
+ "refresh": "1m",
+ "panels": [
+  {
+   "type": "timeseries",
+   "title": "CPU utilization (Cloud Monitoring /metrics)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"cm-gauge\",__name__=~\".*cpu_utilization\"}",
+     "legendFormat": "{{instance_name}} ({{project_id}})",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "CPU utilization (GMP /gmp-metrics)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"gmp-gauge\",__name__=~\".*cpu_utilization\"}",
+     "legendFormat": "{{instance_name}} ({{project_id}})",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Received bytes per minute: CM DELTA as-is (counter) vs GMP gauge",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"cm-delta\",__name__=~\".*received_bytes_count\"}",
+     "legendFormat": "cm {{instance_name}} ({{project_id}})",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"gmp-delta\",__name__=~\".*received_bytes_count\"}",
+     "legendFormat": "gmp {{instance_name}} ({{project_id}})",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Received bytes/s: CM ALIGN_RATE vs GMP/60",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"cm-delta-rate\",__name__=~\".*received_bytes_count\"}",
+     "legendFormat": "cm-rate {{instance_name}} ({{project_id}})",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"gmp-delta\",__name__=~\".*received_bytes_count\"} / 60",
+     "legendFormat": "gmp/60 {{instance_name}} ({{project_id}})",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Sent bytes/s: CM ALIGN_RATE vs GMP/60",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"cm-delta-rate\",__name__=~\".*sent_bytes_count\"}",
+     "legendFormat": "cm-rate {{instance_name}} ({{project_id}})",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "{job=\"gmp-delta\",__name__=~\".*sent_bytes_count\"} / 60",
+     "legendFormat": "gmp/60 {{instance_name}} ({{project_id}})",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "up per job / instance",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "up{job=~\"cm-.*|gmp-.*\"}",
+     "legendFormat": "{{job}} {{scrape_project}} {{scrape_target}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Series per job (churn check: should be flat)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "count by (job) ({job=~\"cm-.*|gmp-.*\",__name__!~\"up|scrape_.*\"})",
+     "legendFormat": "{{job}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Scrape duration",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom-e2e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom-e2e"
+     },
+     "expr": "scrape_duration_seconds{job=~\"cm-.*|gmp-.*\"}",
+     "legendFormat": "{{job}} {{scrape_project}} {{scrape_target}}",
+     "refId": "A"
+    }
+   ]
+  }
+ ]
+}

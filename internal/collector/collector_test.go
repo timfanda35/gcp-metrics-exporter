@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,19 @@ type fakeMetricServer struct {
 
 	listFn      func(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error)
 	lastRequest *monitoringpb.ListTimeSeriesRequest
+
+	// descriptorUnit, when non-nil, is served by GetMetricDescriptor;
+	// otherwise the call is Unimplemented. descriptorCalls counts calls.
+	descriptorUnit  *string
+	descriptorCalls int
+}
+
+func (s *fakeMetricServer) GetMetricDescriptor(_ context.Context, req *monitoringpb.GetMetricDescriptorRequest) (*metricpb.MetricDescriptor, error) {
+	s.descriptorCalls++
+	if s.descriptorUnit == nil {
+		return nil, status.Error(codes.Unimplemented, "no descriptor")
+	}
+	return &metricpb.MetricDescriptor{Name: req.GetName(), Unit: *s.descriptorUnit}, nil
 }
 
 func (s *fakeMetricServer) ListTimeSeries(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
@@ -199,7 +213,7 @@ func TestCollect_GaugeInt64Double(t *testing.T) {
 				t.Fatalf("want 1 family, got %d", len(fams))
 			}
 			fam := fams[0]
-			if got := fam.GetName(); got != "compute_googleapis_com_instance_cpu_utilization" {
+			if got := fam.GetName(); got != "gcp_compute_googleapis_com_instance_cpu_utilization" {
 				t.Errorf("family name = %q", got)
 			}
 			if got := fam.GetType(); got != dto.MetricType_GAUGE {
@@ -270,15 +284,16 @@ func TestCollect_CumulativeStartTimeUnix(t *testing.T) {
 	}
 }
 
-// TestCollect_DeltaSummation exercises required test case 3.
-func TestCollect_DeltaSummation(t *testing.T) {
+// TestCollect_DeltaLatestPointGauge: a DELTA series (ALIGN_NONE/ALIGN_DELTA)
+// is exported as a gauge holding the newest point's value. Summing points or
+// labelling with a per-scrape start time made the series non-monotonic and
+// created a new series on every scrape.
+func TestCollect_DeltaLatestPointGauge(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
-	// GCP returns most-recent-first. Build three points whose start
-	// times step backwards from now.
+	// GCP returns most-recent-first.
 	p1 := mkPoint(now.Add(-2*time.Minute), now.Add(-time.Minute), doubleValue(1.5))
 	p2 := mkPoint(now.Add(-3*time.Minute), now.Add(-2*time.Minute), doubleValue(2.5))
-	earliestStart := now.Add(-4 * time.Minute)
-	p3 := mkPoint(earliestStart, now.Add(-3*time.Minute), doubleValue(0.25))
+	p3 := mkPoint(now.Add(-4*time.Minute), now.Add(-3*time.Minute), doubleValue(0.25))
 
 	fake := &fakeMetricServer{
 		listFn: func(_ context.Context, _ *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
@@ -307,16 +322,91 @@ func TestCollect_DeltaSummation(t *testing.T) {
 	if len(fams) != 1 {
 		t.Fatalf("want 1 family, got %d", len(fams))
 	}
-	if fams[0].GetType() != dto.MetricType_COUNTER {
-		t.Fatalf("want COUNTER, got %v", fams[0].GetType())
+	if fams[0].GetType() != dto.MetricType_GAUGE {
+		t.Fatalf("want GAUGE, got %v", fams[0].GetType())
 	}
 	m := fams[0].GetMetric()[0]
-	if got := m.GetCounter().GetValue(); math.Abs(got-(1.5+2.5+0.25)) > 1e-9 {
-		t.Errorf("counter value = %v, want 4.25", got)
+	if got := m.GetGauge().GetValue(); math.Abs(got-1.5) > 1e-9 {
+		t.Errorf("gauge value = %v, want newest point 1.5", got)
 	}
-	wantStart := strconv.FormatInt(earliestStart.Unix(), 10)
-	if got := labelValue(m, "start_time_unix"); got != wantStart {
-		t.Errorf("start_time_unix = %q, want %q", got, wantStart)
+	if got := labelValue(m, "start_time_unix"); got != "" {
+		t.Errorf("start_time_unix = %q, want no such label", got)
+	}
+}
+
+// TestCollect_EmitTimestamps: with EmitTimestamps the sample carries the
+// newest point's end time; without it no timestamp is set.
+func TestCollect_EmitTimestamps(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	end := now.Add(-4 * time.Minute)
+	for _, emit := range []bool{false, true} {
+		emit := emit
+		t.Run(strconv.FormatBool(emit), func(t *testing.T) {
+			fake := &fakeMetricServer{
+				listFn: func(_ context.Context, _ *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
+					return &monitoringpb.ListTimeSeriesResponse{
+						TimeSeries: []*monitoringpb.TimeSeries{{
+							Metric:     &metricpb.Metric{Type: "x"},
+							Resource:   &monitoredres.MonitoredResource{Type: "global"},
+							MetricKind: metricpb.MetricDescriptor_GAUGE,
+							ValueType:  metricpb.MetricDescriptor_DOUBLE,
+							Points: []*monitoringpb.Point{
+								mkPoint(end.Add(-time.Minute), end, doubleValue(3)),
+								mkPoint(end.Add(-2*time.Minute), end.Add(-time.Minute), doubleValue(2)),
+							},
+						}},
+					}, nil
+				},
+			}
+			client, cleanup := startFakeServer(t, fake)
+			t.Cleanup(cleanup)
+
+			c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now)})
+			fams, err := c.Collect(context.Background(), QueryParams{ProjectID: "p", MetricType: "x", EmitTimestamps: emit})
+			if err != nil || len(fams) != 1 {
+				t.Fatalf("Collect: fams=%d err=%v", len(fams), err)
+			}
+			m := fams[0].GetMetric()[0]
+			if !emit {
+				if m.TimestampMs != nil {
+					t.Errorf("TimestampMs = %v, want nil", m.GetTimestampMs())
+				}
+				return
+			}
+			if got, want := m.GetTimestampMs(), end.UnixMilli(); got != want {
+				t.Errorf("TimestampMs = %d, want newest point end %d", got, want)
+			}
+		})
+	}
+}
+
+// TestBuildRequest_EmitTimestampsAlignsEnd: buckets must end on an
+// alignment-period boundary so their timestamps line up with GCP's own
+// sample times. Without EmitTimestamps the end stays at "now".
+func TestBuildRequest_EmitTimestampsAlignsEnd(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 26, 0, time.UTC)
+	c := NewGCPCollector(nil, Options{Now: fixedClock(now)})
+	base := QueryParams{ProjectID: "p", MetricType: "x", Interval: 10 * time.Minute, AlignmentPeriod: time.Minute}
+
+	req, err := c.buildRequest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.GetInterval().GetEndTime().AsTime(); !got.Equal(now) {
+		t.Errorf("end without EmitTimestamps = %v, want %v", got, now)
+	}
+
+	base.EmitTimestamps = true
+	req, err = c.buildRequest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEnd := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	if got := req.GetInterval().GetEndTime().AsTime(); !got.Equal(wantEnd) {
+		t.Errorf("end = %v, want %v", got, wantEnd)
+	}
+	if got := req.GetInterval().GetStartTime().AsTime(); !got.Equal(wantEnd.Add(-10 * time.Minute)) {
+		t.Errorf("start = %v, want %v", got, wantEnd.Add(-10*time.Minute))
 	}
 }
 
@@ -716,3 +806,122 @@ func TestBuildRequest_GroupByOnlyWithReducer(t *testing.T) {
 
 // silence unused-helper warnings if any future test removes references.
 var _ = findFamily
+
+// gaugeListFn returns one GAUGE series, enough for tests that only look at
+// family-level fields such as HELP.
+func gaugeListFn(now time.Time) func(context.Context, *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
+	return func(_ context.Context, _ *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
+		return &monitoringpb.ListTimeSeriesResponse{
+			TimeSeries: []*monitoringpb.TimeSeries{{
+				Metric:     &metricpb.Metric{Type: "x"},
+				Resource:   &monitoredres.MonitoredResource{Type: "global"},
+				MetricKind: metricpb.MetricDescriptor_GAUGE,
+				ValueType:  metricpb.MetricDescriptor_DOUBLE,
+				Points:     []*monitoringpb.Point{mkPoint(now.Add(-time.Minute), now, doubleValue(1))},
+			}},
+		}, nil
+	}
+}
+
+// TestCollect_HelpDescribesAlignerAndUnit: HELP states how the value was
+// aligned and its unit (ALIGN_RATE turns "By" into "By/s").
+func TestCollect_HelpDescribesAlignerAndUnit(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	unit := "By"
+	fake := &fakeMetricServer{listFn: gaugeListFn(now), descriptorUnit: &unit}
+	client, cleanup := startFakeServer(t, fake)
+	t.Cleanup(cleanup)
+
+	c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now)})
+	fams, err := c.Collect(context.Background(), QueryParams{
+		ProjectID: "p", MetricType: "compute.googleapis.com/instance/network/sent_bytes_count",
+		Aligner: "ALIGN_RATE", AlignmentPeriod: time.Minute,
+	})
+	if err != nil || len(fams) != 1 {
+		t.Fatalf("Collect: fams=%d err=%v", len(fams), err)
+	}
+	help := fams[0].GetHelp()
+	for _, want := range []string{
+		"compute.googleapis.com/instance/network/sent_bytes_count",
+		"aligner=ALIGN_RATE", "alignment_period=1m0s", "unit=By/s",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("HELP %q missing %q", help, want)
+		}
+	}
+}
+
+// TestCollect_HelpWithoutDescriptor: a failing descriptor lookup must not
+// fail the scrape; HELP just omits the unit.
+func TestCollect_HelpWithoutDescriptor(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	fake := &fakeMetricServer{listFn: gaugeListFn(now)} // GetMetricDescriptor -> Unimplemented
+	client, cleanup := startFakeServer(t, fake)
+	t.Cleanup(cleanup)
+
+	c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now)})
+	fams, err := c.Collect(context.Background(), QueryParams{ProjectID: "p", MetricType: "x"})
+	if err != nil || len(fams) != 1 {
+		t.Fatalf("Collect: fams=%d err=%v", len(fams), err)
+	}
+	help := fams[0].GetHelp()
+	if !strings.Contains(help, "aligner=ALIGN_MEAN") {
+		t.Errorf("HELP %q missing default aligner", help)
+	}
+	if strings.Contains(help, "unit=") {
+		t.Errorf("HELP %q should not state a unit", help)
+	}
+}
+
+// TestCollect_DescriptorCached: the descriptor is fetched once per
+// (project, metric type) across collectors sharing a cache, including when
+// the lookup is answered with a permanent error.
+func TestCollect_DescriptorCached(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	for name, unit := range map[string]*string{"found": ptr("By"), "unimplemented": nil} {
+		unit := unit
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeMetricServer{listFn: gaugeListFn(now), descriptorUnit: unit}
+			client, cleanup := startFakeServer(t, fake)
+			t.Cleanup(cleanup)
+
+			cache := NewDescriptorCache()
+			for i := 0; i < 3; i++ {
+				c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now), Descriptors: cache})
+				if _, err := c.Collect(context.Background(), QueryParams{ProjectID: "p", MetricType: "x"}); err != nil {
+					t.Fatalf("Collect: %v", err)
+				}
+			}
+			if fake.descriptorCalls != 1 {
+				t.Errorf("GetMetricDescriptor calls = %d, want 1", fake.descriptorCalls)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// TestResultUnit covers how aligners and reducers change the base unit.
+func TestResultUnit(t *testing.T) {
+	cases := []struct {
+		base, aligner, reducer, want string
+	}{
+		{"By", "ALIGN_NONE", "REDUCE_NONE", "By"},
+		{"By", "ALIGN_MEAN", "REDUCE_NONE", "By"},
+		{"By", "ALIGN_RATE", "REDUCE_NONE", "By/s"},
+		{"", "ALIGN_RATE", "REDUCE_NONE", "1/s"},
+		{"By", "ALIGN_COUNT", "REDUCE_NONE", "1"},
+		{"By", "ALIGN_FRACTION_TRUE", "REDUCE_NONE", "1"},
+		{"By", "ALIGN_PERCENT_CHANGE", "REDUCE_NONE", "%"},
+		{"By", "ALIGN_RATE", "REDUCE_SUM", "By/s"},
+		{"By", "ALIGN_MEAN", "REDUCE_COUNT", "1"},
+		{"", "ALIGN_MEAN", "REDUCE_NONE", ""},
+	}
+	for _, tc := range cases {
+		a := monitoringpb.Aggregation_Aligner(monitoringpb.Aggregation_Aligner_value[tc.aligner])
+		r := monitoringpb.Aggregation_Reducer(monitoringpb.Aggregation_Reducer_value[tc.reducer])
+		if got := resultUnit(tc.base, a, r); got != tc.want {
+			t.Errorf("resultUnit(%q,%s,%s) = %q, want %q", tc.base, tc.aligner, tc.reducer, got, tc.want)
+		}
+	}
+}

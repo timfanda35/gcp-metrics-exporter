@@ -97,6 +97,13 @@ type QueryParams struct {
 	// AlignmentPeriod is the alignment bucket width. Zero defaults to
 	// Interval.
 	AlignmentPeriod time.Duration
+
+	// EmitTimestamps stamps every sample with the end time of the point it
+	// was built from (instead of leaving Prometheus to use scrape time), and
+	// ends the query window on an AlignmentPeriod boundary so the aligned
+	// buckets coincide with GCP's own sample times. Set AlignmentPeriod to the
+	// metric's sample period (e.g. 60s) so each bucket is exactly one point.
+	EmitTimestamps bool
 }
 
 // Options configures a [GCPCollector].
@@ -111,6 +118,10 @@ type Options struct {
 	// requests. Tests inject a deterministic clock; production leaves
 	// it nil and the collector uses [time.Now].
 	Now func() time.Time
+
+	// Descriptors caches metric-descriptor units across collectors. Nil
+	// gives the collector a private cache.
+	Descriptors *DescriptorCache
 }
 
 // MetricClient is the narrow interface the collector consumes from the GCP
@@ -122,6 +133,10 @@ type MetricClient interface {
 	// ListTimeSeries issues a Cloud Monitoring ListTimeSeries RPC and
 	// returns an iterator over the response.
 	ListTimeSeries(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) TimeSeriesIterator
+
+	// GetMetricDescriptor fetches a metric descriptor; used only to learn
+	// the metric's unit for the # HELP line.
+	GetMetricDescriptor(ctx context.Context, req *monitoringpb.GetMetricDescriptorRequest) (*metricpb.MetricDescriptor, error)
 }
 
 // TimeSeriesIterator is the small iterator surface the collector consumes.
@@ -151,6 +166,11 @@ func (g *gcpMetricClient) ListTimeSeries(ctx context.Context, req *monitoringpb.
 	return g.client.ListTimeSeries(ctx, req)
 }
 
+// GetMetricDescriptor delegates to the wrapped SDK client.
+func (g *gcpMetricClient) GetMetricDescriptor(ctx context.Context, req *monitoringpb.GetMetricDescriptorRequest) (*metricpb.MetricDescriptor, error) {
+	return g.client.GetMetricDescriptor(ctx, req)
+}
+
 // Collector is the abstraction handlers depend on.
 type Collector interface {
 	// Collect performs the query described by params and converts the
@@ -160,9 +180,10 @@ type Collector interface {
 
 // GCPCollector implements [Collector] against the Cloud Monitoring v3 API.
 type GCPCollector struct {
-	client    MetricClient
-	maxSeries int
-	now       func() time.Time
+	client      MetricClient
+	maxSeries   int
+	now         func() time.Time
+	descriptors *DescriptorCache
 }
 
 // NewGCPCollector constructs a collector that issues ListTimeSeries calls
@@ -173,12 +194,17 @@ func NewGCPCollector(client MetricClient, opts Options) *GCPCollector {
 		client:    client,
 		maxSeries: opts.MaxSeries,
 		now:       opts.Now,
+
+		descriptors: opts.Descriptors,
 	}
 	if c.maxSeries <= 0 {
 		c.maxSeries = defaultMaxSeries
 	}
 	if c.now == nil {
 		c.now = time.Now
+	}
+	if c.descriptors == nil {
+		c.descriptors = NewDescriptorCache()
 	}
 	return c
 }
@@ -194,6 +220,7 @@ func (c *GCPCollector) Collect(ctx context.Context, params QueryParams) ([]*dto.
 	}
 
 	it := c.client.ListTimeSeries(ctx, req)
+	help := helpText(params.MetricType, req.GetAggregation(), c.unit(ctx, params.ProjectID, params.MetricType))
 
 	// Bucket series by (MetricKind, ValueType) so that mixed responses
 	// (rare, but possible if GCP changes the kind for an aligned series)
@@ -228,6 +255,12 @@ func (c *GCPCollector) Collect(ctx context.Context, params QueryParams) ([]*dto.
 			continue
 		}
 
+		if params.EmitTimestamps {
+			if pts := series.GetPoints(); len(pts) > 0 {
+				converted.metric.TimestampMs = proto.Int64(pointEndMillis(pts[0]))
+			}
+		}
+
 		key := familyKey{
 			name:      converted.familyName,
 			kind:      series.GetMetricKind(),
@@ -238,7 +271,7 @@ func (c *GCPCollector) Collect(ctx context.Context, params QueryParams) ([]*dto.
 			fam = &dto.MetricFamily{
 				Name: proto.String(converted.familyName),
 				Type: converted.familyType.Enum(),
-				Help: proto.String(fmt.Sprintf("GCP metric %s", params.MetricType)),
+				Help: proto.String(help),
 			}
 			families[key] = fam
 			order = append(order, key)
@@ -290,10 +323,13 @@ func (c *GCPCollector) buildRequest(params QueryParams) (*monitoringpb.ListTimeS
 		return nil, fmt.Errorf("invalid reducer %q: %w", reducerName, ErrInvalidAggregation)
 	}
 
-	now := c.now()
+	end := c.now()
+	if params.EmitTimestamps {
+		end = end.Truncate(alignment)
+	}
 	timeInterval := &monitoringpb.TimeInterval{
-		StartTime: timestamppb.New(now.Add(-interval)),
-		EndTime:   timestamppb.New(now),
+		StartTime: timestamppb.New(end.Add(-interval)),
+		EndTime:   timestamppb.New(end),
 	}
 
 	agg := &monitoringpb.Aggregation{
@@ -377,7 +413,11 @@ func convertSeries(metricType string, series *monitoringpb.TimeSeries) (converte
 	}
 
 	switch kind {
-	case metricpb.MetricDescriptor_GAUGE:
+	case metricpb.MetricDescriptor_GAUGE, metricpb.MetricDescriptor_DELTA:
+		// DELTA points hold the amount during one sample period, so they are
+		// not a running total: export the newest point as a gauge. (Summing
+		// the window or labelling it with a start time made the series
+		// non-monotonic and new on every scrape.)
 		points := series.GetPoints()
 		if len(points) == 0 {
 			return convertedMetric{}, false
@@ -411,34 +451,6 @@ func convertSeries(metricType string, series *monitoringpb.TimeSeries) (converte
 			},
 		}, true
 
-	case metricpb.MetricDescriptor_DELTA:
-		// DELTA metrics: GCP returns one delta value per alignment bucket.
-		// We sum across all returned points so a Prometheus counter sees
-		// the total delta covered by the response window. The earliest
-		// point's start time anchors the synthetic counter so a restart
-		// (start time changes) appears as a new series and Prometheus does
-		// not report a false reset.
-		points := series.GetPoints()
-		if len(points) == 0 {
-			return convertedMetric{}, false
-		}
-		var sum float64
-		for _, p := range points {
-			sum += scalarValue(p, valueType)
-		}
-		// Points are most-recent-first; earliest is the last element.
-		earliest := points[len(points)-1]
-		startUnix := pointStartUnix(earliest)
-		labels = appendLabel(labels, "start_time_unix", strconv.FormatInt(startUnix, 10))
-		return convertedMetric{
-			familyName: name,
-			familyType: dto.MetricType_COUNTER,
-			metric: &dto.Metric{
-				Label:   labels,
-				Counter: &dto.Counter{Value: proto.Float64(sum)},
-			},
-		}, true
-
 	default:
 		slog.Debug("collector: skipping series with unsupported metric kind",
 			"metric_type", metricType,
@@ -462,6 +474,12 @@ func scalarValue(p *monitoringpb.Point, valueType metricpb.MetricDescriptor_Valu
 	default:
 		return 0
 	}
+}
+
+// pointEndMillis returns the end time of a Point in Unix milliseconds, or 0
+// when the interval or end timestamp is missing.
+func pointEndMillis(p *monitoringpb.Point) int64 {
+	return p.GetInterval().GetEndTime().AsTime().UnixMilli()
 }
 
 // pointStartUnix returns the Unix start time of a Point, defaulting to 0
@@ -523,12 +541,18 @@ func appendLabel(labels []*dto.LabelPair, name, value string) []*dto.LabelPair {
 	})
 }
 
+// metricNamePrefix is prepended to every exported metric name so GCP-sourced
+// series are recognisable (and cannot collide with the exporter's own or a
+// scraper's metrics). /gmp-metrics uses the same prefix.
+const metricNamePrefix = "gcp_"
+
 // promMetricName converts a GCP metric type into a Prometheus-safe metric
-// name by replacing "/", ".", and "-" with "_". No fixed prefix is added —
-// the GCP namespace already disambiguates ("compute_googleapis_com_...").
+// name: "/", "." and "-" become "_" and [metricNamePrefix] is prepended
+// ("gcp_compute_googleapis_com_...").
 func promMetricName(metricType string) string {
 	var b strings.Builder
-	b.Grow(len(metricType))
+	b.Grow(len(metricNamePrefix) + len(metricType))
+	b.WriteString(metricNamePrefix)
 	for _, r := range metricType {
 		switch r {
 		case '/', '.', '-':

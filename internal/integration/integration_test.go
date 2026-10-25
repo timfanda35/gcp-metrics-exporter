@@ -271,7 +271,7 @@ func TestEndToEnd_GaugeFlow(t *testing.T) {
 	}
 
 	fams := parseProm(t, body)
-	fam, ok := fams["compute_googleapis_com_instance_cpu_utilization"]
+	fam, ok := fams["gcp_compute_googleapis_com_instance_cpu_utilization"]
 	if !ok {
 		t.Fatalf("missing metric family; got names=%v", famNames(fams))
 	}
@@ -356,7 +356,7 @@ func TestEndToEnd_DistributionFlow(t *testing.T) {
 	if len(fams) != 1 {
 		t.Fatalf("want exactly 1 family, got %d (%v)", len(fams), famNames(fams))
 	}
-	fam, ok := fams["svc_example_com_latency"]
+	fam, ok := fams["gcp_svc_example_com_latency"]
 	if !ok {
 		t.Fatalf("missing metric family svc_example_com_latency; got %v", famNames(fams))
 	}

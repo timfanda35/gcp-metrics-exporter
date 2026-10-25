@@ -1,0 +1,146 @@
+# Rendered by docker-compose.e2e.yaml (__PROJECT_A__/__PROJECT_B__ -> $PROJECT_A/$PROJECT_B).
+# The exporter emits resource_type on every series; project_id is taken from GCP/GMP when
+# present and otherwise filled by the metric_relabel_configs below. No `instance` relabel
+# is needed (instance stays the exporter address); scrape_project + scrape_target keep up/scrape_*
+# series of different targets in the same job distinct.
+# Target encoding: "<project>;<metric_type>" for /metrics, "<project>;<promql>" for /gmp-metrics.
+global:
+  scrape_interval: 60s
+  scrape_timeout: 25s
+
+scrape_configs:
+  # Cloud Monitoring GAUGE: VM CPU.
+  - job_name: cm-gauge
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "__PROJECT_A__;compute.googleapis.com/instance/cpu/utilization"
+          - "__PROJECT_B__;compute.googleapis.com/instance/cpu/utilization"
+    metric_relabel_configs: &project_id_fill
+      # Fill project_id from the scraped project only when the series has none.
+      - source_labels: [project_id, scrape_project]
+        regex: ";(.+)"
+        target_label: project_id
+        replacement: "$1"
+    relabel_configs: &cm_relabel
+      - source_labels: [__address__]
+        regex: "([^;]+);(.+)"
+        target_label: __param_project
+        replacement: "$1"
+      - source_labels: [__address__]
+        regex: "([^;]+);(.+)"
+        target_label: __param_metric_type
+        replacement: "$2"
+      # up / scrape_* carry no project_id; keep the scraped project on the target.
+      - source_labels: [__param_project]
+        target_label: scrape_project
+      - source_labels: [__param_metric_type]
+        target_label: scrape_target
+      - target_label: __address__
+        replacement: "exporter:8080"
+
+  # Cloud Monitoring DELTA with the default aligner (ALIGN_MEAN): GCP returns GAUGE after
+  # alignment, so the exporter emits a plain gauge.
+  - job_name: cm-delta
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "__PROJECT_A__;compute.googleapis.com/instance/network/received_bytes_count"
+          - "__PROJECT_A__;compute.googleapis.com/instance/network/sent_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/received_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/sent_bytes_count"
+    metric_relabel_configs: *project_id_fill
+    relabel_configs: *cm_relabel
+
+  # Correct DELTA, bytes per 60s sample period: ALIGN_NONE returns the raw points, exported as a
+  # gauge. alignment_period = sample period and emit_timestamps=true store each value at its real
+  # point time (a few minutes behind scrape time because of GCP's ingest delay).
+  - job_name: cm-delta-raw
+    metrics_path: /metrics
+    params:
+      aligner: ["ALIGN_NONE"]
+      interval: ["10m"]
+      alignment_period: ["60s"]
+      emit_timestamps: ["true"]
+    static_configs:
+      - targets:
+          - "__PROJECT_A__;compute.googleapis.com/instance/network/received_bytes_count"
+          - "__PROJECT_A__;compute.googleapis.com/instance/network/sent_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/received_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/sent_bytes_count"
+    metric_relabel_configs: *project_id_fill
+    relabel_configs: *cm_relabel
+
+  # Correct DELTA, bytes/s: ALIGN_RATE over a 60s alignment period equals value/60 exactly. (With
+  # the default 5m alignment period the not-yet-ingested tail of the window is still divided in,
+  # which understated the rate by ~60%.)
+  - job_name: cm-delta-rate
+    metrics_path: /metrics
+    params:
+      aligner: ["ALIGN_RATE"]
+      interval: ["10m"]
+      alignment_period: ["60s"]
+      emit_timestamps: ["true"]
+    static_configs:
+      - targets:
+          - "__PROJECT_A__;compute.googleapis.com/instance/network/received_bytes_count"
+          - "__PROJECT_A__;compute.googleapis.com/instance/network/sent_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/received_bytes_count"
+          - "__PROJECT_B__;compute.googleapis.com/instance/network/sent_bytes_count"
+    metric_relabel_configs: *project_id_fill
+    relabel_configs: *cm_relabel
+
+  # GMP PromQL: DELTA read as raw gauge, offset past the ~240s ingest delay.
+  - job_name: gmp-delta
+    metrics_path: /gmp-metrics
+    params:
+      time_offset: ["4m"]
+    static_configs:
+      - targets:
+          - "__PROJECT_A__;compute_googleapis_com:instance_network_received_bytes_count"
+          - "__PROJECT_A__;compute_googleapis_com:instance_network_sent_bytes_count"
+          - "__PROJECT_B__;compute_googleapis_com:instance_network_received_bytes_count"
+          - "__PROJECT_B__;compute_googleapis_com:instance_network_sent_bytes_count"
+    metric_relabel_configs: *project_id_fill
+    relabel_configs: &gmp_relabel
+      - source_labels: [__address__]
+        regex: "([^;]+);(.+)"
+        target_label: __param_project
+        replacement: "$1"
+      - source_labels: [__address__]
+        regex: "([^;]+);(.+)"
+        target_label: __param_query
+        replacement: "$2"
+      # up / scrape_* carry no project_id; keep the scraped project on the target.
+      - source_labels: [__param_project]
+        target_label: scrape_project
+      - source_labels: [__param_query]
+        target_label: scrape_target
+      - target_label: __address__
+        replacement: "exporter:8080"
+
+  # GMP PromQL: GAUGE CPU.
+  - job_name: gmp-gauge
+    metrics_path: /gmp-metrics
+    params:
+      time_offset: ["4m"]
+    static_configs:
+      - targets:
+          - "__PROJECT_A__;compute_googleapis_com:instance_cpu_utilization"
+          - "__PROJECT_B__;compute_googleapis_com:instance_cpu_utilization"
+    metric_relabel_configs: *project_id_fill
+    relabel_configs: *gmp_relabel
+
+  # GMP aggregation drops project_id from the series; the relabel rule must restore it.
+  - job_name: gmp-agg
+    metrics_path: /gmp-metrics
+    params:
+      project: ["__PROJECT_A__"]
+      query: ["max by (__name__, zone) (compute_googleapis_com:instance_cpu_utilization)"]
+      time_offset: ["4m"]
+    static_configs:
+      - targets: ["exporter:8080"]
+        labels:
+          scrape_project: "__PROJECT_A__"
+          scrape_target: "max by zone (cpu_utilization)"
+    metric_relabel_configs: *project_id_fill

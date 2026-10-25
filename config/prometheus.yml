@@ -32,9 +32,12 @@ scrape_configs:
         regex: "([^;]+);(.+)"
         target_label: __param_metric_type
         replacement: "$2"
-      # Surface the project as an `instance` label so series are easy to identify.
+      # Keep the scraped project / metric on the target so up{} and scrape_* series of
+      # different targets stay distinct (the exporter's own project_id label is untouched).
       - source_labels: [__param_project]
-        target_label: instance
+        target_label: scrape_project
+      - source_labels: [__param_metric_type]
+        target_label: scrape_target
       # Finally, point all of these targets at the exporter service.
       - target_label: __address__
         replacement: "host.docker.internal:8080"

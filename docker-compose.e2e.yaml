@@ -1,0 +1,63 @@
+# Quick end-to-end stack: exporter + Prometheus + Grafana.
+#   cp .env.e2e.example .env.e2e   # fill in
+#   docker compose --env-file .env.e2e -f docker-compose.e2e.yaml up -d --build
+#   ./scripts/e2e-check.sh
+services:
+  exporter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gcp-metrics-exporter:dev
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: "debug"
+      LOG_FORMAT: "text"
+      SCRAPE_TIMEOUT: "30s"
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/adc.json
+      DEFAULT_IMPERSONATE_SA: "${IMPERSONATE_SA:-}"
+    volumes:
+      # On Linux the exporter runs as UID 65532; a 0600 host file is unreadable there
+      # (chmod 644 a copy, or add `user:` to this service). Docker Desktop/OrbStack map it.
+      - ${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS in .env.e2e}:/secrets/adc.json:ro
+    ports:
+      - "18080:8080"   # host 8080 is often taken; Prometheus uses exporter:8080 internally
+    healthcheck:
+      test: ["CMD", "/exporter", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    environment:
+      PROJECT_A: "${PROJECT_A:?set PROJECT_A}"
+      PROJECT_B: "${PROJECT_B:?set PROJECT_B}"
+    volumes:
+      - ./config/e2e/prometheus.yml.tmpl:/etc/prometheus/prometheus.yml.tmpl:ro
+    # The image does not expand env vars in the config, so render the template first.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        sed -e "s/__PROJECT_A__/$$PROJECT_A/g" -e "s/__PROJECT_B__/$$PROJECT_B/g"
+        /etc/prometheus/prometheus.yml.tmpl > /tmp/prometheus.yml &&
+        exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      exporter:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:12.4.2
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./config/e2e/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/e2e/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus

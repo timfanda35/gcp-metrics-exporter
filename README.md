@@ -134,7 +134,7 @@ curl 'http://localhost:8080/gmp-metrics?project=my-project&query=http_requests_t
 GMP's PromQL API can also query Cloud Monitoring's built-in system metrics (`compute.googleapis.com/...`, `run.googleapis.com/...`, etc.), not just metrics written via remote write. These retain their original Cloud Monitoring `metricKind` — `GAUGE`, `DELTA`, or `CUMULATIVE` — and that matters for how you query them:
 
 - **`rate()` / `increase()` do not work on system metrics via GMP.** GMP's instant query endpoint doesn't support range-vector selectors (`metric[5m]`) on these bridged metrics — the query succeeds (`200 OK`) but returns zero results, regardless of window size or metric kind. Only bare instant-vector queries (no range selector) return data.
-- **A `DELTA` metric's raw value is already "amount during the last sample period," not a running total.** For example, `compute.googleapis.com/instance/network/{sent,received}_bytes_count` is `DELTA` with a 60s `samplePeriod` — each scrape returns bytes transferred in that ~60s window, and the value naturally goes up and down with real traffic. Don't apply `rate()` to it downstream in Prometheus/Grafana either — it isn't a counter, so `rate()`'s counter-reset compensation logic misinterprets normal fluctuation as resets and produces a spiky, meaningless graph. Divide by the metric's `samplePeriod` instead if you want a per-second value, e.g. `compute_googleapis_com:instance_network_sent_bytes_count / 60`.
+- **A `DELTA` metric's raw value is already "amount during the last sample period," not a running total.** For example, `compute.googleapis.com/instance/network/{sent,received}_bytes_count` is `DELTA` with a 60s `samplePeriod` — each scrape returns bytes transferred in that ~60s window, and the value naturally goes up and down with real traffic. Don't apply `rate()` to it downstream in Prometheus/Grafana either — it isn't a counter, so `rate()`'s counter-reset compensation logic misinterprets normal fluctuation as resets and produces a spiky, meaningless graph. Divide by the metric's `samplePeriod` instead if you want a per-second value, e.g. `gcp_compute_googleapis_com_instance_network_sent_bytes_count / 60` (the exporter prefixes every metric name with `gcp_` and writes `:` as `_` in `/gmp-metrics` names; the PromQL you send to `query` still uses GMP's `:` form).
 - **Set `time_offset` to cover the metric's `ingestDelay`**, not just GMP's 5-minute staleness window — some system metrics (e.g. the network byte counters above) have a documented `ingestDelay` of 240s (4m). Querying before that delay elapses risks reading a stale or not-yet-settled sample.
 - **Check a metric's kind, sample period, and ingest delay before wiring it up:**
   ```bash
@@ -155,9 +155,68 @@ GMP's PromQL API can also query Cloud Monitoring's built-in system metrics (`com
 | `group_by` | no | — | Comma-separated group-by fields (only when `reducer != REDUCE_NONE`) |
 | `interval` | no | `5m` | Query window (Go duration: `30s`, `5m`, `1h`) |
 | `alignment_period` | no | = `interval` | Alignment period |
+| `emit_timestamps` | no | `false` | Stamp each sample with the end time of its point instead of scrape time, and end the query window on an `alignment_period` boundary |
 | `impersonate_sa` | no | — | Override the impersonation target for this request |
 
 Response: `text/plain; version=0.0.4; charset=utf-8` (Prometheus exposition format).
+
+Every exported metric name gets a `gcp_` prefix (`compute.googleapis.com/instance/cpu/utilization` → `gcp_compute_googleapis_com_instance_cpu_utilization`), on both `/metrics` and `/gmp-metrics`.
+
+The `# HELP` line says how the value was produced, e.g. `GCP metric compute.googleapis.com/instance/network/sent_bytes_count (aligner=ALIGN_RATE, alignment_period=1m0s, unit=By/s)`. The unit comes from the metric descriptor (one `GetMetricDescriptor` call per project and metric type, cached for the life of the process) and is adjusted for the aligner/reducer (`ALIGN_RATE` adds `/s`, counts become `1`). If the descriptor cannot be read, the unit is simply left out; the scrape is not affected. For `/gmp-metrics` the HELP keeps the original GMP metric name.
+
+Metric kinds map to Prometheus types as: `GAUGE` and `DELTA` → gauge, `CUMULATIVE` → counter (with a `start_time_unix` label), `DISTRIBUTION` → histogram.
+
+#### Getting correct DELTA values (e.g. VM network traffic)
+
+A `DELTA` point is the amount during one sample period (60s for `network/*_bytes_count`), so it is exported as a gauge holding the newest point. Two things decide whether the number and its time are right:
+
+- **Align to the sample period.** The default `alignment_period` equals `interval` (5m). Cloud Monitoring data arrives about 3–4 minutes late, so the tail of that window is empty, yet it still counts towards the bucket: measured `ALIGN_RATE` came out ~60% too low. With `alignment_period=60s`, `ALIGN_RATE` equals `delta / 60` exactly and `ALIGN_MEAN` equals the raw point. Use an `interval` larger than the ingest delay plus one period (e.g. `10m`).
+- **Store the value at its real time.** Without `emit_timestamps=true`, Prometheus stamps samples with scrape time, so graphs lag the real traffic by the ingest delay. With it, each sample carries its point's end time.
+
+```bash
+# bytes per 60s, at the real time
+curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googleapis.com/instance/network/sent_bytes_count&aligner=ALIGN_NONE&interval=10m&alignment_period=60s&emit_timestamps=true'
+# bytes per second
+curl 'http://localhost:8080/metrics?project=my-project&metric_type=compute.googleapis.com/instance/network/sent_bytes_count&aligner=ALIGN_RATE&interval=10m&alignment_period=60s&emit_timestamps=true'
+```
+
+The same settings as a Prometheus scrape job (one target per project, `<project>;<metric_type>`; `config/e2e/prometheus.yml.tmpl` has the full version with `metric_relabel_configs`):
+
+```yaml
+- job_name: gcp-vm-network
+  metrics_path: /metrics
+  params:
+    aligner: ["ALIGN_RATE"]        # or ALIGN_NONE for bytes per 60s
+    interval: ["10m"]
+    alignment_period: ["60s"]
+    emit_timestamps: ["true"]
+  static_configs:
+    - targets:
+        - "my-project-a;compute.googleapis.com/instance/network/sent_bytes_count"
+        - "my-project-a;compute.googleapis.com/instance/network/received_bytes_count"
+  relabel_configs:
+    - source_labels: [__address__]
+      regex: "([^;]+);(.+)"
+      target_label: __param_project
+      replacement: "$1"
+    - source_labels: [__address__]
+      regex: "([^;]+);(.+)"
+      target_label: __param_metric_type
+      replacement: "$2"
+    - source_labels: [__param_metric_type]   # keeps up{} distinct per target
+      target_label: scrape_target
+    - target_label: __address__
+      replacement: "exporter:8080"
+```
+
+Things to know when using `emit_timestamps=true`:
+
+- Samples appear in Prometheus a few minutes behind the scrape (the ingest delay, ~3–4 minutes for VM network), at their real time. Alerts and dashboards see that lag.
+- Prometheus does not mark timestamped series stale, so a series that disappears (for example a deleted VM) lingers for about 5 minutes.
+- If a scrape returns the same point as the previous one, the identical sample is ignored; this is normal.
+- Set `alignment_period` to the metric's sample period. A larger value puts the timestamp on a bucket end that does not match any single point.
+
+`scripts/e2e-verify-raw.sh` compares what Prometheus stored for these two settings against the raw Cloud Monitoring points (see `docker-compose.e2e.yaml`).
 
 The `metric.type` filter clause is always prepended automatically; the `filter` parameter is AND-composed onto it:
 

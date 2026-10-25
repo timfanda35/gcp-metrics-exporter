@@ -28,6 +28,11 @@ import (
 // broader scope.
 const DefaultMonitoringReadScope = "https://www.googleapis.com/auth/monitoring.read"
 
+// impersonatorScope is the scope requested for the base (impersonator)
+// credentials. The IAM Credentials API needs it; leaving the scope list empty
+// makes user ADC refresh fail with "invalid_scope".
+const impersonatorScope = "https://www.googleapis.com/auth/cloud-platform"
+
 // Config controls how a token source is constructed.
 //
 // All fields are optional. A zero-value Config falls back to Application
@@ -79,11 +84,10 @@ func NewTokenSource(ctx context.Context, cfg Config) (oauth2.TokenSource, error)
 		return creds.TokenSource, nil
 	}
 
-	// Impersonation path: build base credentials (without scopes — the
-	// impersonator only needs IAM Credentials access, which is granted by
-	// cloud-platform / IAM bindings on the impersonator SA), then wrap with
+	// Impersonation path: build base credentials with the cloud-platform
+	// scope (required to call the IAM Credentials API), then wrap with
 	// impersonate.CredentialsTokenSource.
-	baseCreds, err := loadBaseCredentials(ctx, cfg.CredentialsFile, nil)
+	baseCreds, err := loadBaseCredentials(ctx, cfg.CredentialsFile, []string{impersonatorScope})
 	if err != nil {
 		return nil, err
 	}
@@ -101,8 +105,7 @@ func NewTokenSource(ctx context.Context, cfg Config) (oauth2.TokenSource, error)
 
 // loadBaseCredentials returns google credentials from either an explicit
 // JSON key file or Application Default Credentials. The provided scopes are
-// applied to whichever path is taken; pass nil to skip scope application
-// (useful for the impersonator credentials).
+// applied to whichever path is taken.
 func loadBaseCredentials(ctx context.Context, credentialsFile string, scopes []string) (*google.Credentials, error) {
 	if credentialsFile != "" {
 		data, err := os.ReadFile(credentialsFile)
