@@ -118,6 +118,10 @@ type Options struct {
 	// requests. Tests inject a deterministic clock; production leaves
 	// it nil and the collector uses [time.Now].
 	Now func() time.Time
+
+	// Descriptors caches metric-descriptor units across collectors. Nil
+	// gives the collector a private cache.
+	Descriptors *DescriptorCache
 }
 
 // MetricClient is the narrow interface the collector consumes from the GCP
@@ -129,6 +133,10 @@ type MetricClient interface {
 	// ListTimeSeries issues a Cloud Monitoring ListTimeSeries RPC and
 	// returns an iterator over the response.
 	ListTimeSeries(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) TimeSeriesIterator
+
+	// GetMetricDescriptor fetches a metric descriptor; used only to learn
+	// the metric's unit for the # HELP line.
+	GetMetricDescriptor(ctx context.Context, req *monitoringpb.GetMetricDescriptorRequest) (*metricpb.MetricDescriptor, error)
 }
 
 // TimeSeriesIterator is the small iterator surface the collector consumes.
@@ -158,6 +166,11 @@ func (g *gcpMetricClient) ListTimeSeries(ctx context.Context, req *monitoringpb.
 	return g.client.ListTimeSeries(ctx, req)
 }
 
+// GetMetricDescriptor delegates to the wrapped SDK client.
+func (g *gcpMetricClient) GetMetricDescriptor(ctx context.Context, req *monitoringpb.GetMetricDescriptorRequest) (*metricpb.MetricDescriptor, error) {
+	return g.client.GetMetricDescriptor(ctx, req)
+}
+
 // Collector is the abstraction handlers depend on.
 type Collector interface {
 	// Collect performs the query described by params and converts the
@@ -167,9 +180,10 @@ type Collector interface {
 
 // GCPCollector implements [Collector] against the Cloud Monitoring v3 API.
 type GCPCollector struct {
-	client    MetricClient
-	maxSeries int
-	now       func() time.Time
+	client      MetricClient
+	maxSeries   int
+	now         func() time.Time
+	descriptors *DescriptorCache
 }
 
 // NewGCPCollector constructs a collector that issues ListTimeSeries calls
@@ -180,12 +194,17 @@ func NewGCPCollector(client MetricClient, opts Options) *GCPCollector {
 		client:    client,
 		maxSeries: opts.MaxSeries,
 		now:       opts.Now,
+
+		descriptors: opts.Descriptors,
 	}
 	if c.maxSeries <= 0 {
 		c.maxSeries = defaultMaxSeries
 	}
 	if c.now == nil {
 		c.now = time.Now
+	}
+	if c.descriptors == nil {
+		c.descriptors = NewDescriptorCache()
 	}
 	return c
 }
@@ -201,6 +220,7 @@ func (c *GCPCollector) Collect(ctx context.Context, params QueryParams) ([]*dto.
 	}
 
 	it := c.client.ListTimeSeries(ctx, req)
+	help := helpText(params.MetricType, req.GetAggregation(), c.unit(ctx, params.ProjectID, params.MetricType))
 
 	// Bucket series by (MetricKind, ValueType) so that mixed responses
 	// (rare, but possible if GCP changes the kind for an aligned series)
@@ -251,7 +271,7 @@ func (c *GCPCollector) Collect(ctx context.Context, params QueryParams) ([]*dto.
 			fam = &dto.MetricFamily{
 				Name: proto.String(converted.familyName),
 				Type: converted.familyType.Enum(),
-				Help: proto.String(fmt.Sprintf("GCP metric %s", params.MetricType)),
+				Help: proto.String(help),
 			}
 			families[key] = fam
 			order = append(order, key)

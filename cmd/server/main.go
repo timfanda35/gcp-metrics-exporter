@@ -231,6 +231,7 @@ func main() {
 	}
 
 	cache := collector.NewClientCache(authCfg)
+	descriptors := collector.NewDescriptorCache()
 
 	limits := handler.Limits{
 		ScrapeTimeout:        cfg.ScrapeTimeout,
@@ -250,7 +251,7 @@ func main() {
 		}
 		return collector.NewGCPCollector(
 			collector.NewMetricClientFromGCP(client),
-			collector.Options{MaxSeries: limits.MaxSeries},
+			collector.Options{MaxSeries: limits.MaxSeries, Descriptors: descriptors},
 		), nil
 	}
 

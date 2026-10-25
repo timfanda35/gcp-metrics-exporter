@@ -3,6 +3,7 @@ package gmp
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -197,5 +198,21 @@ func TestCollector_Collect_NormalizesLabelsAndName(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// HELP keeps the original GMP name, since the exported name is prefixed and
+// has ':' rewritten.
+func TestCollector_Collect_HelpKeepsOriginalName(t *testing.T) {
+	t.Parallel()
+	c := NewCollector(&fakeClient{samples: []Sample{
+		{Labels: map[string]string{"__name__": "compute_googleapis_com:instance_cpu_utilization"}, Value: 1},
+	}})
+	fams, err := c.Collect(context.Background(), "p", "q", time.Unix(0, 0))
+	if err != nil || len(fams) != 1 {
+		t.Fatalf("Collect: fams=%d err=%v", len(fams), err)
+	}
+	if help := fams[0].GetHelp(); !strings.Contains(help, "compute_googleapis_com:instance_cpu_utilization") {
+		t.Errorf("HELP %q should contain the original GMP metric name", help)
 	}
 }

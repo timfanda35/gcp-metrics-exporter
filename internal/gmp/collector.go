@@ -45,18 +45,18 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 	order := make([]string, 0, len(samples))
 
 	for _, s := range samples {
-		name, ok := s.Labels["__name__"]
-		if !ok || name == "" {
+		orig, ok := s.Labels["__name__"]
+		if !ok || orig == "" {
 			continue
 		}
-		name = metricNamePrefix + strings.ReplaceAll(name, ":", "_")
+		name := metricNamePrefix + strings.ReplaceAll(orig, ":", "_")
 
 		fam, exists := families[name]
 		if !exists {
 			fam = &dto.MetricFamily{
 				Name: proto.String(name),
 				Type: dto.MetricType_GAUGE.Enum(),
-				Help: proto.String(fmt.Sprintf("GMP metric %s", name)),
+				Help: proto.String(fmt.Sprintf("GMP metric %s (instant query, exported as gauge)", orig)),
 			}
 			families[name] = fam
 			order = append(order, name)

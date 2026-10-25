@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,19 @@ type fakeMetricServer struct {
 
 	listFn      func(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error)
 	lastRequest *monitoringpb.ListTimeSeriesRequest
+
+	// descriptorUnit, when non-nil, is served by GetMetricDescriptor;
+	// otherwise the call is Unimplemented. descriptorCalls counts calls.
+	descriptorUnit  *string
+	descriptorCalls int
+}
+
+func (s *fakeMetricServer) GetMetricDescriptor(_ context.Context, req *monitoringpb.GetMetricDescriptorRequest) (*metricpb.MetricDescriptor, error) {
+	s.descriptorCalls++
+	if s.descriptorUnit == nil {
+		return nil, status.Error(codes.Unimplemented, "no descriptor")
+	}
+	return &metricpb.MetricDescriptor{Name: req.GetName(), Unit: *s.descriptorUnit}, nil
 }
 
 func (s *fakeMetricServer) ListTimeSeries(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
@@ -792,3 +806,122 @@ func TestBuildRequest_GroupByOnlyWithReducer(t *testing.T) {
 
 // silence unused-helper warnings if any future test removes references.
 var _ = findFamily
+
+// gaugeListFn returns one GAUGE series, enough for tests that only look at
+// family-level fields such as HELP.
+func gaugeListFn(now time.Time) func(context.Context, *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
+	return func(_ context.Context, _ *monitoringpb.ListTimeSeriesRequest) (*monitoringpb.ListTimeSeriesResponse, error) {
+		return &monitoringpb.ListTimeSeriesResponse{
+			TimeSeries: []*monitoringpb.TimeSeries{{
+				Metric:     &metricpb.Metric{Type: "x"},
+				Resource:   &monitoredres.MonitoredResource{Type: "global"},
+				MetricKind: metricpb.MetricDescriptor_GAUGE,
+				ValueType:  metricpb.MetricDescriptor_DOUBLE,
+				Points:     []*monitoringpb.Point{mkPoint(now.Add(-time.Minute), now, doubleValue(1))},
+			}},
+		}, nil
+	}
+}
+
+// TestCollect_HelpDescribesAlignerAndUnit: HELP states how the value was
+// aligned and its unit (ALIGN_RATE turns "By" into "By/s").
+func TestCollect_HelpDescribesAlignerAndUnit(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	unit := "By"
+	fake := &fakeMetricServer{listFn: gaugeListFn(now), descriptorUnit: &unit}
+	client, cleanup := startFakeServer(t, fake)
+	t.Cleanup(cleanup)
+
+	c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now)})
+	fams, err := c.Collect(context.Background(), QueryParams{
+		ProjectID: "p", MetricType: "compute.googleapis.com/instance/network/sent_bytes_count",
+		Aligner: "ALIGN_RATE", AlignmentPeriod: time.Minute,
+	})
+	if err != nil || len(fams) != 1 {
+		t.Fatalf("Collect: fams=%d err=%v", len(fams), err)
+	}
+	help := fams[0].GetHelp()
+	for _, want := range []string{
+		"compute.googleapis.com/instance/network/sent_bytes_count",
+		"aligner=ALIGN_RATE", "alignment_period=1m0s", "unit=By/s",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("HELP %q missing %q", help, want)
+		}
+	}
+}
+
+// TestCollect_HelpWithoutDescriptor: a failing descriptor lookup must not
+// fail the scrape; HELP just omits the unit.
+func TestCollect_HelpWithoutDescriptor(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	fake := &fakeMetricServer{listFn: gaugeListFn(now)} // GetMetricDescriptor -> Unimplemented
+	client, cleanup := startFakeServer(t, fake)
+	t.Cleanup(cleanup)
+
+	c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now)})
+	fams, err := c.Collect(context.Background(), QueryParams{ProjectID: "p", MetricType: "x"})
+	if err != nil || len(fams) != 1 {
+		t.Fatalf("Collect: fams=%d err=%v", len(fams), err)
+	}
+	help := fams[0].GetHelp()
+	if !strings.Contains(help, "aligner=ALIGN_MEAN") {
+		t.Errorf("HELP %q missing default aligner", help)
+	}
+	if strings.Contains(help, "unit=") {
+		t.Errorf("HELP %q should not state a unit", help)
+	}
+}
+
+// TestCollect_DescriptorCached: the descriptor is fetched once per
+// (project, metric type) across collectors sharing a cache, including when
+// the lookup is answered with a permanent error.
+func TestCollect_DescriptorCached(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	for name, unit := range map[string]*string{"found": ptr("By"), "unimplemented": nil} {
+		unit := unit
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeMetricServer{listFn: gaugeListFn(now), descriptorUnit: unit}
+			client, cleanup := startFakeServer(t, fake)
+			t.Cleanup(cleanup)
+
+			cache := NewDescriptorCache()
+			for i := 0; i < 3; i++ {
+				c := NewGCPCollector(NewMetricClientFromGCP(client), Options{Now: fixedClock(now), Descriptors: cache})
+				if _, err := c.Collect(context.Background(), QueryParams{ProjectID: "p", MetricType: "x"}); err != nil {
+					t.Fatalf("Collect: %v", err)
+				}
+			}
+			if fake.descriptorCalls != 1 {
+				t.Errorf("GetMetricDescriptor calls = %d, want 1", fake.descriptorCalls)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// TestResultUnit covers how aligners and reducers change the base unit.
+func TestResultUnit(t *testing.T) {
+	cases := []struct {
+		base, aligner, reducer, want string
+	}{
+		{"By", "ALIGN_NONE", "REDUCE_NONE", "By"},
+		{"By", "ALIGN_MEAN", "REDUCE_NONE", "By"},
+		{"By", "ALIGN_RATE", "REDUCE_NONE", "By/s"},
+		{"", "ALIGN_RATE", "REDUCE_NONE", "1/s"},
+		{"By", "ALIGN_COUNT", "REDUCE_NONE", "1"},
+		{"By", "ALIGN_FRACTION_TRUE", "REDUCE_NONE", "1"},
+		{"By", "ALIGN_PERCENT_CHANGE", "REDUCE_NONE", "%"},
+		{"By", "ALIGN_RATE", "REDUCE_SUM", "By/s"},
+		{"By", "ALIGN_MEAN", "REDUCE_COUNT", "1"},
+		{"", "ALIGN_MEAN", "REDUCE_NONE", ""},
+	}
+	for _, tc := range cases {
+		a := monitoringpb.Aggregation_Aligner(monitoringpb.Aggregation_Aligner_value[tc.aligner])
+		r := monitoringpb.Aggregation_Reducer(monitoringpb.Aggregation_Reducer_value[tc.reducer])
+		if got := resultUnit(tc.base, a, r); got != tc.want {
+			t.Errorf("resultUnit(%q,%s,%s) = %q, want %q", tc.base, tc.aligner, tc.reducer, got, tc.want)
+		}
+	}
+}

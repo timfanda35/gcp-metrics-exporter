@@ -162,6 +162,8 @@ Response: `text/plain; version=0.0.4; charset=utf-8` (Prometheus exposition form
 
 Every exported metric name gets a `gcp_` prefix (`compute.googleapis.com/instance/cpu/utilization` → `gcp_compute_googleapis_com_instance_cpu_utilization`), on both `/metrics` and `/gmp-metrics`.
 
+The `# HELP` line says how the value was produced, e.g. `GCP metric compute.googleapis.com/instance/network/sent_bytes_count (aligner=ALIGN_RATE, alignment_period=1m0s, unit=By/s)`. The unit comes from the metric descriptor (one `GetMetricDescriptor` call per project and metric type, cached for the life of the process) and is adjusted for the aligner/reducer (`ALIGN_RATE` adds `/s`, counts become `1`). If the descriptor cannot be read, the unit is simply left out; the scrape is not affected. For `/gmp-metrics` the HELP keeps the original GMP metric name.
+
 Metric kinds map to Prometheus types as: `GAUGE` and `DELTA` → gauge, `CUMULATIVE` → counter (with a `start_time_unix` label), `DISTRIBUTION` → histogram.
 
 #### Getting correct DELTA values (e.g. VM network traffic)

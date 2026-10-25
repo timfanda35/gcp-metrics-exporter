@@ -67,6 +67,7 @@ gcp-metrics-exporter/
 - 呼叫 `cloud.google.com/go/monitoring/apiv3/v2` 的 `ListTimeSeries`
 - 將 `TimeSeries` 轉換為 Prometheus `Metric`（GAUGE 與 DELTA → gauge、CUMULATIVE → counter、DISTRIBUTION → histogram）
 - 每次 `/metrics` 請求都是 **即時查詢**（stateless）
+- `# HELP` 寫明 metric type、aligner、alignment_period（有 reducer 時含 reducer）與單位；單位由 `GetMetricDescriptor` 取得（`DescriptorCache` 依 project + metric type 在 process 內快取，由 `main.go` 建立並注入各請求的 collector），再依 aligner／reducer 推導（`ALIGN_RATE` → `/s`、count → `1`）。查不到時只省略單位，不影響 scrape
 
 ### `internal/gmp`
 - 職責對應 `internal/collector`，但資料來源是 GMP，不是 Cloud Monitoring
