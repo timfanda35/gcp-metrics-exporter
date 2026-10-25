@@ -28,6 +28,15 @@ total=$(q 'count(up{job=~"cm-.*|gmp-.*"})' '.data.result[0].value[1] // "0"')
 down=$(q 'up{job=~"cm-.*|gmp-.*"} == 0' '.data.result[] | .metric.job + " " + .metric.scrape_project + " " + .metric.scrape_target')
 [ -z "$down" ] && [ "$total" = "$expected" ] && ok "all targets up" || bad "targets down or missing:"$'\n'"$down"
 
+# A target can be up (exporter answered 200) and still return nothing, e.g. when GCP data is
+# delayed past the query window. Every (job, project) must have at least one data series.
+empty=0
+while read -r job proj; do
+  n=$(q "count({job=\"$job\",project_id=\"$proj\",__name__!~\"up|scrape_.*\"})" '.data.result[0].value[1] // "0"')
+  if [ "$n" = "0" ]; then bad "no data: job=$job project=$proj (delay beyond interval/time_offset?)"; empty=1; fi
+done < <(q 'count by (job, scrape_project) (up{job=~"cm-.*|gmp-.*"})' '.data.result[] | .metric.job + " " + .metric.scrape_project')
+[ "$empty" = "0" ] && ok "every job/project returned data"
+
 # Prometheus must not have rejected samples.
 for m in prometheus_target_scrapes_sample_out_of_order_total \
          prometheus_target_scrapes_sample_out_of_bounds_total \
