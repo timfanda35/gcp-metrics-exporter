@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 if [ -f .env.e2e ]; then set -a; . ./.env.e2e; set +a; fi
 PROM=${PROM:-http://localhost:9090}
 EXP=${EXP:-http://localhost:18080}
-GRAF=${GRAF:-http://localhost:3000}
+GRAF=${GRAF:-http://localhost:13000}
 WAIT=${1:-200}
 fail=0
 ok()  { echo "PASS  $*"; }

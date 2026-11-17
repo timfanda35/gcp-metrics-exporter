@@ -43,6 +43,7 @@ type config struct {
 	MaxConcurrent        int
 	MaxSeries            int
 	ShutdownGrace        time.Duration
+	DebugPageEnabled     bool
 }
 
 // defaultPort is the listen port used when PORT is unset or empty.
@@ -124,6 +125,14 @@ func loadConfig() (config, error) {
 			return config{}, fmt.Errorf("invalid SHUTDOWN_GRACE %q: must be a positive Go duration", v)
 		}
 		cfg.ShutdownGrace = d
+	}
+
+	if v := os.Getenv("DEBUG_PAGE_ENABLED"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid DEBUG_PAGE_ENABLED %q: must be a boolean (true/false)", v)
+		}
+		cfg.DebugPageEnabled = b
 	}
 
 	return cfg, nil
@@ -250,7 +259,7 @@ func main() {
 			return nil, err
 		}
 		return collector.NewGCPCollector(
-			collector.NewMetricClientFromGCP(client),
+			collector.NewTracingClient(collector.NewMetricClientFromGCP(client), logger),
 			collector.Options{MaxSeries: limits.MaxSeries, Descriptors: descriptors},
 		), nil
 	}
@@ -259,7 +268,11 @@ func main() {
 
 	gmpCache := gmp.NewClientCache(authCfg)
 	gmpFactory := func(ctx context.Context, sa string) (gmp.Client, error) {
-		return gmpCache.Get(ctx, sa)
+		client, err := gmpCache.Get(ctx, sa)
+		if err != nil {
+			return nil, err
+		}
+		return gmp.NewTracingClient(client, logger), nil
 	}
 	gmpHandler := handler.NewGMPHandler(gmpFactory, limits, logger)
 
@@ -267,6 +280,10 @@ func main() {
 	mux.Handle("/metrics", metricsHandler)
 	mux.Handle("/gmp-metrics", gmpHandler)
 	mux.HandleFunc("/healthz", handler.HandleHealthz)
+	if cfg.DebugPageEnabled {
+		// No authentication: shows raw upstream errors. Keep off public ports.
+		handler.RegisterDebug(mux, metricsHandler, gmpHandler)
+	}
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
@@ -294,6 +311,7 @@ func main() {
 		slog.Int("max_series", cfg.MaxSeries),
 		slog.Duration("shutdown_grace", cfg.ShutdownGrace),
 		slog.Bool("default_impersonate_sa_set", cfg.DefaultImpersonateSA != ""),
+		slog.Bool("debug_page_enabled", cfg.DebugPageEnabled),
 	)
 
 	// Block on either a fatal listener error or a shutdown signal.

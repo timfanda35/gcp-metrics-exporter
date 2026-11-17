@@ -39,14 +39,21 @@ gcp-metrics-exporter/
 │   ├── auth/
 │   │   └── auth.go               # GCP 認證與 Impersonation（兩個 backend 共用）
 │   ├── collector/
-│   │   └── collector.go          # Cloud Monitoring 查詢 + Prometheus 轉換
+│   │   ├── collector.go          # Cloud Monitoring 查詢 + Prometheus 轉換
+│   │   ├── descriptor.go         # metric descriptor 單位快取與 # HELP 文字
+│   │   └── trace.go              # MetricClient 的 tracing decorator（debug）
+│   ├── debugtrace/
+│   │   └── trace.go              # 每個請求的 upstream 呼叫紀錄（debug 頁面用）
 │   ├── gmp/
 │   │   ├── client.go             # GMP Prometheus-compatible instant query API client
 │   │   ├── collector.go          # GMP 查詢結果 → Prometheus MetricFamily（一律為 gauge）
+│   │   ├── trace.go              # gmp.Client 的 tracing decorator（debug）
 │   │   └── cache.go              # 依 impersonation target 快取 GMP client
 │   ├── handler/
 │   │   ├── handler.go            # HTTP handler（/metrics、/healthz 端點）
-│   │   └── gmp_handler.go        # HTTP handler（/gmp-metrics 端點）
+│   │   ├── gmp_handler.go        # HTTP handler（/gmp-metrics 端點）
+│   │   ├── debug.go              # /debug、/debug/run（DEBUG_PAGE_ENABLED）
+│   │   └── debug.html            # debug 頁面（embed）
 │   └── integration/
 │       └── integration_test.go   # 端對端測試（build tag: integration，目前僅涵蓋 /metrics）
 └── config/
@@ -79,6 +86,13 @@ gcp-metrics-exporter/
 - `handler.go`：實作 `GET /metrics` HTTP endpoint（從 query parameters 解析請求參數，見 API 設計；組合 `auth` + `collector`，以 `text/plain; version=0.0.4` 格式回應）與 `GET /healthz` 健康檢查端點
 - `gmp_handler.go`：實作 `GET /gmp-metrics` HTTP endpoint（組合 `auth` + `internal/gmp`，同樣以 Prometheus text format 回應）
 - 兩個 handler 各自持有獨立的 concurrency semaphore，都以 `MAX_CONCURRENT_SCRAPES` 設定上限——**這不是一個全域共用的 cap**，而是「`/metrics` 最多 N 個並發」與「`/gmp-metrics` 最多 N 個並發」分開計算
+
+### Debug（`internal/debugtrace`、`collector/trace.go`、`gmp/trace.go`、`handler/debug.go`）
+- 一般回應刻意只回通用錯誤訊息；原始錯誤由 debug 頁面與 debug log 提供
+- `debugtrace`：放在 request context 的 `Trace`，記錄該請求的 upstream 呼叫（`Call`：backend、operation、request 參數、筆數、延遲、原始錯誤）。沒有 trace 且非 debug 層級時 decorator 直接 pass-through，無額外成本
+- `collector.NewTracingClient`／`gmp.NewTracingClient`：包住 `MetricClient`／`gmp.Client` 的 decorator，由 `main.go` 的 factory 套用
+- `handler/debug.go` + `debug.html`：`GET /debug`（頁面）、`GET /debug/run?backend=metrics|gmp-metrics&...`（在同 process 內用 `httptest.ResponseRecorder` 跑真正的 handler，回傳 `{status, body, calls, elapsed_ms}`）。只在 `DEBUG_PAGE_ENABLED=true` 時註冊；factory 建 client 失敗時補一筆 `build_client` call
+- `LOG_LEVEL=debug`：每個 upstream 呼叫一行（`monitoring request`／`gmp request`），失敗時另有 `... error detail`（`error_detail` 為原始錯誤）；info 以上不輸出
 
 ### `cmd/server/main.go`
 - 載入設定（環境變數）
@@ -176,6 +190,7 @@ Impersonation 使用方式：
 | `MAX_CONCURRENT_SCRAPES`    | `16`   | 同時進行中的 scrape 上限，超過回 `429`。`/metrics` 與 `/gmp-metrics` 各自獨立計數（各自的 semaphore 都以此值為上限），不是兩者共用同一個全域 cap |
 | `MAX_SERIES_PER_REQUEST`    | `10000` | 單次回應最多 series 數，超過回 `503` |
 | `SHUTDOWN_GRACE`            | `10s`  | Graceful shutdown 允許時間 |
+| `DEBUG_PAGE_ENABLED`        | `false` | 提供 `/debug` 頁面與 `/debug/run`（顯示 upstream 呼叫與原始錯誤）；無認證，只在非公開 port 啟用 |
 
 ---
 

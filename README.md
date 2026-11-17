@@ -270,6 +270,15 @@ Applies to both `/metrics` and `/gmp-metrics`:
 | `MAX_CONCURRENT_SCRAPES` | `16` | Concurrent in-flight requests across all endpoints; over-limit returns 429 |
 | `MAX_SERIES_PER_REQUEST` | `10000` | Hard cap on series returned per response |
 | `SHUTDOWN_GRACE` | `10s` | Graceful shutdown timeout |
+| `DEBUG_PAGE_ENABLED` | `false` | Serve the `/debug` page (see [Debugging](#debugging)). No authentication: never enable it on a publicly reachable port |
+
+## Debugging
+
+The HTTP response deliberately keeps upstream failures generic (for example `upstream authentication or authorization failed`, `upstream error from GMP`). Two tools expose the real cause:
+
+**Debug page.** Set `DEBUG_PAGE_ENABLED=true` and open `http://localhost:8080/debug`. Pick a backend, fill in the same parameters you would send to `/metrics` or `/gmp-metrics`, and run it. The page shows the equivalent request URL, the HTTP status and body, and every upstream call made for that request: for Cloud Monitoring the project, filter, time range, aligner, alignment period and reducer; for GMP the project, PromQL and evaluation time; plus result count, latency and the **raw upstream error text** (for example an `invalid_scope` from a failed impersonation). A failure to build the client (credential discovery, impersonation setup) is shown as a `build_client` call. `/debug/run?backend=metrics|gmp-metrics&...` returns the same data as JSON and runs the real handler in-process, so validation and concurrency limits apply. With the flag unset both paths return 404. The page has no authentication and shows raw errors and request details, so enable it only on a non-public port.
+
+**Debug log.** With `LOG_LEVEL=debug` the exporter logs one `monitoring request` / `gmp request` line per upstream call (parameters, result count, latency, error), and a `... error detail` line carrying the raw error (`error_detail`) when a request fails. At `info` and above neither is emitted.
 
 ## Authentication
 

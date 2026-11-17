@@ -24,6 +24,7 @@ func clearAllConfigEnv(t *testing.T) {
 		"MAX_CONCURRENT_SCRAPES",
 		"MAX_SERIES_PER_REQUEST",
 		"SHUTDOWN_GRACE",
+		"DEBUG_PAGE_ENABLED",
 	} {
 		t.Setenv(k, "")
 	}
@@ -166,6 +167,23 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDebugPage(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		want bool
+	}{{"", false}, {"false", false}, {"true", true}, {"1", true}} {
+		clearAllConfigEnv(t)
+		t.Setenv("DEBUG_PAGE_ENABLED", tc.env)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("DEBUG_PAGE_ENABLED=%q: %v", tc.env, err)
+		}
+		if cfg.DebugPageEnabled != tc.want {
+			t.Errorf("DEBUG_PAGE_ENABLED=%q: DebugPageEnabled = %v, want %v", tc.env, cfg.DebugPageEnabled, tc.want)
+		}
+	}
+}
+
 func TestLoadConfigValidation(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -211,6 +229,11 @@ func TestLoadConfigValidation(t *testing.T) {
 			name:        "bad MAX_SERIES_PER_REQUEST negative",
 			env:         map[string]string{"MAX_SERIES_PER_REQUEST": "-1"},
 			wantSubstrs: []string{"MAX_SERIES_PER_REQUEST", "-1"},
+		},
+		{
+			name:        "bad DEBUG_PAGE_ENABLED",
+			env:         map[string]string{"DEBUG_PAGE_ENABLED": "maybe"},
+			wantSubstrs: []string{"DEBUG_PAGE_ENABLED", "maybe"},
 		},
 		{
 			name:        "bad SHUTDOWN_GRACE",

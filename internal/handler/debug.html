@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exporter debug</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1f24; --muted:#656d76; --line:#d0d7de; --card:#f6f8fa; --ok:#1a7f37; --err:#cf222e; --warn:#fff8c5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8b949e; --line:#30363d; --card:#161b22; --ok:#3fb950; --err:#f85149; --warn:#3b2e00; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:0 0 8px; }
+  .warn { background:var(--warn); border:1px solid var(--line); border-radius:6px; padding:8px 12px; margin-bottom:16px; }
+  fieldset { border:1px solid var(--line); border-radius:6px; margin:0 0 12px; padding:8px 12px; }
+  label { display:block; margin:6px 0 2px; color:var(--muted); font-size:12px; }
+  input[type=text], select { width:100%; box-sizing:border-box; padding:6px 8px; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:4px; font:inherit; }
+  button { padding:6px 16px; border:1px solid var(--line); border-radius:4px; background:var(--card); color:var(--fg); font:inherit; cursor:pointer; }
+  h2 { font-size:14px; margin:16px 0 4px; }
+  pre { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:8px 12px; overflow:auto; max-height:420px; white-space:pre-wrap; word-break:break-word; margin:0; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Exporter debug</h1>
+  <div class="warn">No authentication. This page shows raw upstream errors and request details; enable it (<code>DEBUG_PAGE_ENABLED</code>) only on a non-public port.</div>
+
+  <form id="f">
+    <fieldset>
+      <label for="backend">Backend</label>
+      <select id="backend">
+        <option value="metrics">/metrics (Cloud Monitoring)</option>
+        <option value="gmp-metrics">/gmp-metrics (Managed Prometheus)</option>
+      </select>
+      <label for="project">project *</label>
+      <input type="text" id="project" required>
+      <label for="impersonate_sa">impersonate_sa</label>
+      <input type="text" id="impersonate_sa">
+    </fieldset>
+
+    <fieldset id="cm">
+      <label for="metric_type">metric_type *</label>
+      <input type="text" id="metric_type" value="compute.googleapis.com/instance/cpu/utilization">
+      <label for="filter">filter</label>
+      <input type="text" id="filter">
+      <label for="aligner">aligner</label>
+      <input type="text" id="aligner" placeholder="ALIGN_MEAN">
+      <label for="reducer">reducer</label>
+      <input type="text" id="reducer" placeholder="REDUCE_NONE">
+      <label for="group_by">group_by</label>
+      <input type="text" id="group_by">
+      <label for="interval">interval</label>
+      <input type="text" id="interval" placeholder="5m">
+      <label for="alignment_period">alignment_period</label>
+      <input type="text" id="alignment_period" placeholder="= interval">
+      <label><input type="checkbox" id="emit_timestamps"> emit_timestamps</label>
+    </fieldset>
+
+    <fieldset id="gmp" class="hidden">
+      <label for="query">query *</label>
+      <input type="text" id="query" value="up">
+      <label for="time_offset">time_offset</label>
+      <input type="text" id="time_offset" placeholder="0">
+    </fieldset>
+
+    <button type="submit">Run</button>
+    <span id="status"></span>
+  </form>
+
+  <h2>Equivalent request</h2>
+  <pre id="url"></pre>
+  <h2>Response body</h2>
+  <pre id="body"></pre>
+  <h2>Upstream calls</h2>
+  <pre id="calls"></pre>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const CM = ['metric_type','filter','aligner','reducer','group_by','interval','alignment_period'];
+const GMP = ['query','time_offset'];
+
+function sync() {
+  const gmp = $('backend').value === 'gmp-metrics';
+  $('cm').classList.toggle('hidden', gmp);
+  $('gmp').classList.toggle('hidden', !gmp);
+}
+$('backend').addEventListener('change', sync);
+sync();
+
+$('f').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const backend = $('backend').value;
+  const qs = new URLSearchParams();
+  const add = (id) => { const v = $(id).value.trim(); if (v) qs.set(id, v); };
+  add('project'); add('impersonate_sa');
+  (backend === 'gmp-metrics' ? GMP : CM).forEach(add);
+  if (backend === 'metrics' && $('emit_timestamps').checked) qs.set('emit_timestamps', 'true');
+
+  $('url').textContent = location.origin + '/' + backend + '?' + qs;
+  $('status').textContent = 'running...';
+  $('status').className = '';
+  $('body').textContent = '';
+  $('calls').textContent = '';
+
+  qs.set('backend', backend);
+  try {
+    const r = await fetch('/debug/run?' + qs);
+    const j = await r.json();
+    if (j.error) { throw new Error(j.error); }
+    const ok = j.status >= 200 && j.status < 300;
+    $('status').textContent = 'HTTP ' + j.status + ' in ' + j.elapsed_ms + ' ms';
+    $('status').className = ok ? 'ok' : 'err';
+    $('body').textContent = j.body || '(empty body: no series matched)';
+    $('calls').textContent = (j.calls && j.calls.length) ? JSON.stringify(j.calls, null, 2) : '(no upstream call was made)';
+  } catch (e) {
+    $('status').textContent = String(e);
+    $('status').className = 'err';
+  }
+});
+</script>
+</body>
+</html>

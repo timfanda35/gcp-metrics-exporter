@@ -145,6 +145,7 @@ func (h *GMPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	client, err := h.clientForSA(ctx, params.impersonateSA)
 	if err != nil {
+		traceBuildClientFailure(ctx, "gmp", params.impersonateSA, err)
 		err = fmt.Errorf("handler: build gmp client: %w", err)
 		h.respondGMPError(w, err, append(logAttrs, slog.Int64("total_latency_ms", elapsedMs(h.now(), startTotal)))...)
 		return
@@ -209,6 +210,9 @@ func (h *GMPHandler) respondGMPError(w http.ResponseWriter, err error, logAttrs 
 		slog.String("error_code", errCode),
 		slog.String("error_msg", msg),
 	)
+	if h.logger.Enabled(context.Background(), slog.LevelDebug) {
+		h.logger.Debug("gmp-metrics request error detail", append(logAttrs, slog.String("error_detail", err.Error()))...)
+	}
 	switch level {
 	case slog.LevelError:
 		h.logger.Error("gmp-metrics request failed", logAttrs...)
