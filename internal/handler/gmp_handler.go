@@ -211,7 +211,7 @@ func (h *GMPHandler) respondGMPError(w http.ResponseWriter, err error, logAttrs 
 		slog.String("error_msg", msg),
 	)
 	if h.logger.Enabled(context.Background(), slog.LevelDebug) {
-		h.logger.Debug("gmp-metrics request error detail", append(logAttrs, slog.String("error_detail", err.Error()))...)
+		h.logger.Debug("gmp-metrics request error detail", withErrorDetail(logAttrs, err)...)
 	}
 	switch level {
 	case slog.LevelError:

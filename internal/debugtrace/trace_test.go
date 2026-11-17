@@ -1,7 +1,11 @@
 package debugtrace
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -63,5 +67,53 @@ func TestTrace_ConcurrentAdds(t *testing.T) {
 	wg.Wait()
 	if got := len(tr.Calls()); got != 50 {
 		t.Fatalf("len(calls) = %d, want 50", got)
+	}
+}
+
+func debugLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+func infoLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+}
+
+func TestStart_NilWhenNothingWantsIt(t *testing.T) {
+	if r := Start(context.Background(), infoLogger(), "msg", Call{}); r != nil {
+		t.Fatal("Start should return nil without a trace or debug logging")
+	}
+	var r *Recorder
+	r.Finish(1, errors.New("x")) // nil-safe, must not panic
+}
+
+func TestRecorder_TraceLifecycle(t *testing.T) {
+	ctx, tr := WithTrace(context.Background())
+	r := Start(ctx, infoLogger(), "msg", Call{Backend: "b", Operation: "op", Request: map[string]any{"k": "v"}})
+	if r == nil {
+		t.Fatal("Start returned nil with a trace in the context")
+	}
+	if c := tr.Calls()[0]; !c.Incomplete {
+		t.Errorf("a call that has not finished must be marked incomplete: %+v", c)
+	}
+
+	r.Finish(4, errors.New("boom"))
+	r.Finish(99, nil) // only the first Finish counts
+	c := tr.Calls()[0]
+	if c.Incomplete || c.ResultCount != 4 || c.Error != "boom" {
+		t.Errorf("finished call = %+v", c)
+	}
+}
+
+func TestRecorder_DebugLog(t *testing.T) {
+	var buf bytes.Buffer
+	r := Start(context.Background(), debugLogger(&buf), "my request",
+		Call{Operation: "op", Request: map[string]any{"project": "p", "filter": "f"}})
+	r.Finish(2, errors.New("bad"))
+
+	out := buf.String()
+	for _, want := range []string{"my request", "operation=op", "result_count=2", "project=p", "filter=f", "error=bad"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log %q missing %q", out, want)
+		}
 	}
 }

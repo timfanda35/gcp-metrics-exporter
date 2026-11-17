@@ -188,3 +188,19 @@ func TestErrorDetailLoggedOnlyAtDebug(t *testing.T) {
 		}
 	}
 }
+
+// Headers set by the real handler (Retry-After on quota errors) must reach
+// the debug result, since a scraper would see them.
+func TestDebug_RunKeepsResponseHeaders(t *testing.T) {
+	out := decodeRun(t, doDebug(debugMux(t, nil, &gmp.APIError{StatusCode: 503, Msg: "quota"}), http.MethodGet,
+		"/debug/run?backend=gmp-metrics&project=p&query=up"))
+	if out.Status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", out.Status)
+	}
+	if got := out.Headers["Retry-After"]; len(got) != 1 || got[0] != "30" {
+		t.Errorf("Retry-After = %v, want [30]; headers = %v", got, out.Headers)
+	}
+	if got := out.Headers["Content-Type"]; len(got) == 0 {
+		t.Errorf("Content-Type missing from %v", out.Headers)
+	}
+}

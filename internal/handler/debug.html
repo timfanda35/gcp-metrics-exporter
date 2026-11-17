@@ -72,6 +72,8 @@
 
   <h2>Equivalent request</h2>
   <pre id="url"></pre>
+  <h2>Response headers</h2>
+  <pre id="headers"></pre>
   <h2>Response body</h2>
   <pre id="body"></pre>
   <h2>Upstream calls</h2>
@@ -102,6 +104,7 @@ $('f').addEventListener('submit', async (ev) => {
   $('url').textContent = location.origin + '/' + backend + '?' + qs;
   $('status').textContent = 'running...';
   $('status').className = '';
+  $('headers').textContent = '';
   $('body').textContent = '';
   $('calls').textContent = '';
 
@@ -113,6 +116,7 @@ $('f').addEventListener('submit', async (ev) => {
     const ok = j.status >= 200 && j.status < 300;
     $('status').textContent = 'HTTP ' + j.status + ' in ' + j.elapsed_ms + ' ms';
     $('status').className = ok ? 'ok' : 'err';
+    $('headers').textContent = Object.entries(j.headers || {}).map(([k, v]) => k + ': ' + v.join(', ')).join('\n') || '(none)';
     $('body').textContent = j.body || '(empty body: no series matched)';
     $('calls').textContent = (j.calls && j.calls.length) ? JSON.stringify(j.calls, null, 2) : '(no upstream call was made)';
   } catch (e) {

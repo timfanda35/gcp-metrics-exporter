@@ -1,11 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"time"
 
 	"github.com/timfanda35/gcp-metrics-exporter/internal/debugtrace"
@@ -18,6 +18,7 @@ var debugPage []byte
 // the upstream calls made while producing it.
 type debugRunResponse struct {
 	Status    int               `json:"status"`
+	Headers   http.Header       `json:"headers"`
 	Body      string            `json:"body"`
 	Calls     []debugtrace.Call `json:"calls"`
 	ElapsedMs int64             `json:"elapsed_ms"`
@@ -33,10 +34,6 @@ type debugRunResponse struct {
 // validation apply exactly as for a real scrape.
 func RegisterDebug(mux *http.ServeMux, metrics, gmpMetrics http.Handler) {
 	mux.HandleFunc("/debug", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/debug" {
-			http.NotFound(w, r)
-			return
-		}
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -47,6 +44,19 @@ func RegisterDebug(mux *http.ServeMux, metrics, gmpMetrics http.Handler) {
 	})
 	mux.Handle("/debug/run", debugRunHandler(metrics, gmpMetrics))
 }
+
+// captureWriter is a minimal [http.ResponseWriter] that keeps the status,
+// headers and body of the handler it runs, so /debug/run can report exactly
+// what a scraper would have received.
+type captureWriter struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (c *captureWriter) Header() http.Header         { return c.header }
+func (c *captureWriter) WriteHeader(status int)      { c.status = status }
+func (c *captureWriter) Write(b []byte) (int, error) { return c.body.Write(b) }
 
 // traceBuildClientFailure records a failure to build the upstream client
 // (credential discovery, impersonation setup) when the request is being
@@ -90,13 +100,14 @@ func debugRunHandler(metrics, gmpMetrics http.Handler) http.Handler {
 		inner.URL.RawQuery = q.Encode()
 
 		start := time.Now()
-		rec := httptest.NewRecorder()
+		rec := &captureWriter{header: http.Header{}, status: http.StatusOK}
 		target.ServeHTTP(rec, inner)
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(debugRunResponse{
-			Status:    rec.Code,
-			Body:      rec.Body.String(),
+			Status:    rec.status,
+			Headers:   rec.header,
+			Body:      rec.body.String(),
 			Calls:     trace.Calls(),
 			ElapsedMs: time.Since(start).Milliseconds(),
 		})

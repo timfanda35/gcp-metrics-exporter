@@ -170,3 +170,25 @@ func TestTracingClient_RecordsGetMetricDescriptor(t *testing.T) {
 		t.Errorf("calls = %+v", calls)
 	}
 }
+
+// A consumer that stops reading (for example on ErrMaxSeriesExceeded) leaves
+// the call unfinished; the trace must say so instead of looking successful.
+func TestTracingClient_AbandonedIteratorIsIncomplete(t *testing.T) {
+	inner := &stubMetricClient{it: &sliceIterator{series: []*monitoringpb.TimeSeries{{}, {}, {}}}}
+	c := NewTracingClient(inner, discardLogger())
+	ctx, tr := debugtrace.WithTrace(context.Background())
+
+	it := c.ListTimeSeries(ctx, traceTestRequest())
+	if _, err := it.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if !tr.Calls()[0].Incomplete {
+		t.Error("call should be incomplete while the iterator has not finished")
+	}
+	if _, err := drain(t, it); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.Calls()[0]; got.Incomplete || got.ResultCount != 3 {
+		t.Errorf("after draining: %+v", got)
+	}
+}

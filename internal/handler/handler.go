@@ -382,7 +382,7 @@ func (h *MetricsHandler) respondError(w http.ResponseWriter, err error, logAttrs
 	if h.logger.Enabled(context.Background(), slog.LevelDebug) {
 		// The response and the info/error line only carry the mapped,
 		// generic message; keep the raw cause for debugging.
-		h.logger.Debug("metrics request error detail", append(logAttrs, slog.String("error_detail", err.Error()))...)
+		h.logger.Debug("metrics request error detail", withErrorDetail(logAttrs, err)...)
 	}
 	switch level {
 	case slog.LevelError:
@@ -522,4 +522,12 @@ func elapsedMs(end, start time.Time) int64 {
 		return 0
 	}
 	return d.Milliseconds()
+}
+
+// withErrorDetail returns a copy of attrs plus the raw error text. It copies
+// so the slice later passed to the info/error log line is not aliased.
+func withErrorDetail(attrs []any, err error) []any {
+	out := make([]any, 0, len(attrs)+1)
+	out = append(out, attrs...)
+	return append(out, slog.String("error_detail", err.Error()))
 }
