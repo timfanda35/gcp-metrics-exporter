@@ -12,6 +12,7 @@ services:
       PORT: "8080"
       LOG_LEVEL: "debug"
       LOG_FORMAT: "text"
+      DEBUG_PAGE_ENABLED: "true"   # e2e only: /debug on the published port
       SCRAPE_TIMEOUT: "30s"
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/adc.json
       DEFAULT_IMPERSONATE_SA: "${IMPERSONATE_SA:-}"
@@ -58,6 +59,6 @@ services:
       - ./config/e2e/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./config/e2e/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3000:3000"
+      - "13000:3000"   # host 3000 is often taken by dev servers
     depends_on:
       - prometheus

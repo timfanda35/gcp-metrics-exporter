@@ -294,6 +294,7 @@ func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	c, err := h.collectorForSA(ctx, params.impersonateSA)
 	if err != nil {
+		traceBuildClientFailure(ctx, "cloud-monitoring", params.impersonateSA, err)
 		err = fmt.Errorf("handler: build collector: %w", err)
 		h.respondError(w, err, append(logAttrs, slog.Int64("total_latency_ms", elapsedMs(h.now(), startTotal)))...)
 		return
@@ -378,6 +379,11 @@ func (h *MetricsHandler) respondError(w http.ResponseWriter, err error, logAttrs
 		slog.String("error_code", errCode),
 		slog.String("error_msg", msg),
 	)
+	if h.logger.Enabled(context.Background(), slog.LevelDebug) {
+		// The response and the info/error line only carry the mapped,
+		// generic message; keep the raw cause for debugging.
+		h.logger.Debug("metrics request error detail", withErrorDetail(logAttrs, err)...)
+	}
 	switch level {
 	case slog.LevelError:
 		h.logger.Error("metrics request failed", logAttrs...)
@@ -516,4 +522,12 @@ func elapsedMs(end, start time.Time) int64 {
 		return 0
 	}
 	return d.Milliseconds()
+}
+
+// withErrorDetail returns a copy of attrs plus the raw error text. It copies
+// so the slice later passed to the info/error log line is not aliased.
+func withErrorDetail(attrs []any, err error) []any {
+	out := make([]any, 0, len(attrs)+1)
+	out = append(out, attrs...)
+	return append(out, slog.String("error_detail", err.Error()))
 }

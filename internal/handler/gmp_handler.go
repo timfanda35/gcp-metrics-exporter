@@ -145,6 +145,7 @@ func (h *GMPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	client, err := h.clientForSA(ctx, params.impersonateSA)
 	if err != nil {
+		traceBuildClientFailure(ctx, "gmp", params.impersonateSA, err)
 		err = fmt.Errorf("handler: build gmp client: %w", err)
 		h.respondGMPError(w, err, append(logAttrs, slog.Int64("total_latency_ms", elapsedMs(h.now(), startTotal)))...)
 		return
@@ -209,6 +210,9 @@ func (h *GMPHandler) respondGMPError(w http.ResponseWriter, err error, logAttrs 
 		slog.String("error_code", errCode),
 		slog.String("error_msg", msg),
 	)
+	if h.logger.Enabled(context.Background(), slog.LevelDebug) {
+		h.logger.Debug("gmp-metrics request error detail", withErrorDetail(logAttrs, err)...)
+	}
 	switch level {
 	case slog.LevelError:
 		h.logger.Error("gmp-metrics request failed", logAttrs...)
@@ -233,6 +237,15 @@ func mapGMPError(err error) (status int, msg string, headers map[string]string, 
 			"client cancelled the request",
 			nil,
 			"client_canceled",
+			slog.LevelInfo
+	}
+
+	if errors.Is(err, gmp.ErrNameCollision) {
+		// The message only names metrics from the caller's own query.
+		return http.StatusBadRequest,
+			err.Error(),
+			nil,
+			"name_collision",
 			slog.LevelInfo
 	}
 
