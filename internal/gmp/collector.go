@@ -2,7 +2,9 @@ package gmp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +15,11 @@ import (
 // metricNamePrefix is prepended to every exported metric name; it matches the
 // prefix used by the Cloud Monitoring collector.
 const metricNamePrefix = "gcp_"
+
+// ErrNameCollision is returned by [Collector.Collect] when two different GMP
+// metric names export as the same name with identical labels, which would
+// otherwise emit duplicate series in one scrape.
+var ErrNameCollision = errors.New("metric names collide after normalisation")
 
 // Collector converts GMP instant query results into Prometheus MetricFamily
 // values. All metrics are emitted as GAUGE — the point-in-time nature of an
@@ -43,6 +50,9 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 
 	families := make(map[string]*dto.MetricFamily)
 	order := make([]string, 0, len(samples))
+	// origins maps an exported series identity (name + labels) to the GMP
+	// name it came from, to detect two different names landing on one series.
+	origins := make(map[string]string, len(samples))
 
 	for _, s := range samples {
 		orig, ok := s.Labels["__name__"]
@@ -63,6 +73,12 @@ func (c *Collector) Collect(ctx context.Context, project, query string, at time.
 		}
 
 		labels := normalizeLabels(s.Labels)
+
+		id := name + "\x00" + labelsKey(labels)
+		if prev, seen := origins[id]; seen && prev != orig {
+			return nil, fmt.Errorf("%w: %q and %q both export as %q with identical labels", ErrNameCollision, prev, orig, name)
+		}
+		origins[id] = orig
 
 		fam.Metric = append(fam.Metric, &dto.Metric{
 			Label: labels,
@@ -96,4 +112,14 @@ func normalizeLabels(in map[string]string) []*dto.LabelPair {
 		})
 	}
 	return labels
+}
+
+// labelsKey returns a canonical, order-independent string for a label set.
+func labelsKey(labels []*dto.LabelPair) string {
+	parts := make([]string, 0, len(labels))
+	for _, lp := range labels {
+		parts = append(parts, lp.GetName()+"="+lp.GetValue())
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x00")
 }

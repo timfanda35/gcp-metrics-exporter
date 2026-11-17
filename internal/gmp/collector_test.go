@@ -216,3 +216,68 @@ func TestCollector_Collect_HelpKeepsOriginalName(t *testing.T) {
 		t.Errorf("HELP %q should contain the original GMP metric name", help)
 	}
 }
+
+// Two different GMP names that export as the same name with identical labels
+// would produce duplicate series, so the query is rejected with a clear error.
+func TestCollector_Collect_NameCollision(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		samples []Sample
+		wantErr bool
+	}{
+		{
+			name: "different originals, same exported name, identical labels",
+			samples: []Sample{
+				{Labels: map[string]string{"__name__": "foo:bar", "job": "a"}, Value: 1},
+				{Labels: map[string]string{"__name__": "foo_bar", "job": "a"}, Value: 2},
+			},
+			wantErr: true,
+		},
+		{
+			name: "same exported name but different labels is only merged",
+			samples: []Sample{
+				{Labels: map[string]string{"__name__": "foo:bar", "job": "a"}, Value: 1},
+				{Labels: map[string]string{"__name__": "foo_bar", "job": "b"}, Value: 2},
+			},
+		},
+		{
+			name: "same original name repeated is not a collision",
+			samples: []Sample{
+				{Labels: map[string]string{"__name__": "foo:bar", "job": "a"}, Value: 1},
+				{Labels: map[string]string{"__name__": "foo:bar", "job": "a"}, Value: 2},
+			},
+		},
+		{
+			name: "label renamed onto an existing label name does not collide",
+			samples: []Sample{
+				{Labels: map[string]string{"__name__": "m", "monitored_resource": "x"}, Value: 1},
+				{Labels: map[string]string{"__name__": "m", "resource_type": "x"}, Value: 2},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := NewCollector(&fakeClient{samples: tc.samples})
+			_, err := c.Collect(context.Background(), "p", "q", time.Unix(0, 0))
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrNameCollision) {
+				t.Fatalf("err = %v, want ErrNameCollision", err)
+			}
+			for _, want := range []string{"foo:bar", "foo_bar", "gcp_foo_bar"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q should mention %q", err, want)
+				}
+			}
+		})
+	}
+}

@@ -143,6 +143,7 @@ GET /gmp-metrics?project=my-gcp-project&query=up{job="my-app"}&time_offset=2m
 - 資源類型 label 統一為 `resource_type`（GMP 的 `monitored_resource` 會被改名；若 sample 已有 `resource_type` 則不改）
 - 所有 metric 名稱一律加 `gcp_` 前綴（`/metrics` 與 `/gmp-metrics` 皆是，含 GMP 任意 metric，例如 `up` → `gcp_up`）
 - `/gmp-metrics` 的 metric 名稱中的 `:` 一律轉成 `_`，與 `/metrics` 的 `gcp_compute_googleapis_com_...` 命名一致（送進 `query` 的 PromQL 仍用 GMP 原生名稱）
+- `/gmp-metrics` 若同一次查詢中兩個不同的 GMP 名稱轉換後名稱與 label 組合完全相同（例如 `foo:bar` 與 `foo_bar`），回 `400`（error code `name_collision`，訊息列出兩個原始名稱）；label 組合不同則只合併進同一 family，不報錯
 - exporter 不輸出 `instance` label；Prometheus 端不應再用 relabel 覆寫 `instance`
 
 ### `GET /healthz`

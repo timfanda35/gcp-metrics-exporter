@@ -236,6 +236,15 @@ func mapGMPError(err error) (status int, msg string, headers map[string]string, 
 			slog.LevelInfo
 	}
 
+	if errors.Is(err, gmp.ErrNameCollision) {
+		// The message only names metrics from the caller's own query.
+		return http.StatusBadRequest,
+			err.Error(),
+			nil,
+			"name_collision",
+			slog.LevelInfo
+	}
+
 	var apiErr *gmp.APIError
 	if errors.As(err, &apiErr) {
 		switch {

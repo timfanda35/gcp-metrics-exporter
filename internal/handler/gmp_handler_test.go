@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -288,6 +289,12 @@ func TestMapGMPError(t *testing.T) {
 			wantStatus: http.StatusServiceUnavailable,
 			wantCode:   "quota_exhausted",
 		},
+		{
+			name:       "name collision",
+			err:        fmt.Errorf("%w: %q and %q both export as %q", gmp.ErrNameCollision, "a:b", "a_b", "gcp_a_b"),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "name_collision",
+		},
 	}
 
 	for _, tc := range tests {
@@ -301,5 +308,28 @@ func TestMapGMPError(t *testing.T) {
 				t.Errorf("errCode = %q, want %q", code, tc.wantCode)
 			}
 		})
+	}
+}
+
+// A name collision is the caller's query problem: 400 with the colliding
+// names in the message so it can be fixed.
+func TestGMPHandler_NameCollision_MapsTo400(t *testing.T) {
+	t.Parallel()
+	fc := &fakeGMPClient{samples: []gmp.Sample{
+		{Labels: map[string]string{"__name__": "foo:bar", "job": "a"}, Value: 1},
+		{Labels: map[string]string{"__name__": "foo_bar", "job": "a"}, Value: 2},
+	}}
+	h := newGMPHandler(t, fc, Limits{})
+	req := httptest.NewRequest(http.MethodGet, "/gmp-metrics?project=p&query=x", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{"foo:bar", "foo_bar"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("body %q should mention %q", rec.Body.String(), want)
+		}
 	}
 }

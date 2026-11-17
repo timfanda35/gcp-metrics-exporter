@@ -117,6 +117,8 @@ Queries [GCP Managed Service for Prometheus](https://cloud.google.com/stackdrive
 
 Response: `text/plain; version=0.0.4; charset=utf-8`. All metrics are emitted as `gauge`.
 
+Metric names are prefixed with `gcp_` and `:` becomes `_`. If one query returns two different GMP names that end up as the same exported name with identical labels (for example `foo:bar` and `foo_bar`), the request fails with HTTP 400 naming both, because the output would otherwise contain duplicate series. Different label sets under the same exported name are merged without error.
+
 Example:
 
 ```bash
