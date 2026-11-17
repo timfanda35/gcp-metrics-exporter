@@ -68,6 +68,34 @@ else bad "series churn: $series_before -> $series_after"; fi
 pid=$(q 'count({job="gmp-agg",__name__!~"up|scrape_.*",project_id!=""})' '.data.result[0].value[1] // "0"')
 [ "$pid" != "0" ] && ok "gmp-agg series carry project_id (relabel)" || bad "gmp-agg series missing project_id"
 
+# Debug page (DEBUG_PAGE_ENABLED=true in the e2e stack).
+dbg() { curl -s -G "$EXP/debug/run" "$@"; }
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$EXP/debug")" = "200" ] && curl -s "$EXP/debug" | grep -q '<form' \
+  && ok "debug page served" || bad "debug page not served"
+cm=$(dbg --data-urlencode backend=metrics --data-urlencode "project=${PROJECT_A:-}" \
+  --data-urlencode metric_type=compute.googleapis.com/instance/cpu/utilization)
+echo "$cm" | jq -e '.status==200 and ([.calls[] | select(.operation=="ListTimeSeries" and .result_count>0 and .error==null)] | length==1)' >/dev/null \
+  && ok "debug run (cloud monitoring) shows the upstream call" || bad "debug run (cloud monitoring): $(echo "$cm" | cut -c1-200)"
+gm=$(dbg --data-urlencode backend=gmp-metrics --data-urlencode "project=${PROJECT_A:-}" \
+  --data-urlencode 'query=compute_googleapis_com:instance_cpu_utilization' --data-urlencode time_offset=4m)
+echo "$gm" | jq -e '.status==200 and ([.calls[] | select(.backend=="gmp" and .result_count>0 and .error==null)] | length==1)' >/dev/null \
+  && ok "debug run (gmp) shows the upstream call" || bad "debug run (gmp): $(echo "$gm" | cut -c1-200)"
+# A bad impersonation target: generic response, raw cause only in the trace.
+bad_sa=nonexistent-sa@${PROJECT_A:-p}.iam.gserviceaccount.com
+for be in metrics gmp-metrics; do
+  q_arg=(--data-urlencode metric_type=compute.googleapis.com/instance/cpu/utilization)
+  [ "$be" = gmp-metrics ] && q_arg=(--data-urlencode query=up)
+  r=$(dbg --data-urlencode "backend=$be" --data-urlencode "project=${PROJECT_A:-}" --data-urlencode "impersonate_sa=$bad_sa" "${q_arg[@]}")
+  echo "$r" | jq -e '.status==502 and (.body|test("nonexistent")|not) and ([.calls[].error // ""] | map(test("nonexistent")) | any)' >/dev/null \
+    && ok "debug run ($be) exposes the raw cause that the response hides" || bad "debug run ($be) bad-SA: $(echo "$r" | cut -c1-240)"
+done
+dbg --data-urlencode backend=bogus | jq -e '.error' >/dev/null && ok "debug run rejects an unknown backend" || bad "debug run accepted an unknown backend"
+# Debug log lines (needs docker compose access to the exporter container).
+logs=$(docker compose --env-file .env.e2e -f docker-compose.e2e.yaml logs --no-color --since 10m exporter 2>&1)
+for want in 'msg="monitoring request"' 'msg="gmp request"' 'error_detail='; do
+  grep -q -- "$want" <<<"$logs" && ok "debug log has $want" || bad "debug log missing $want"
+done
+
 curl -sf "$GRAF/api/health" | jq -e '.database=="ok"' >/dev/null && ok "grafana healthy" || bad "grafana health"
 curl -sf "$GRAF/api/datasources/uid/prom-e2e/health" | jq -e '.status=="OK"' >/dev/null && ok "grafana datasource OK" || bad "grafana datasource"
 curl -sf "$GRAF/api/dashboards/uid/vm-e2e" >/dev/null && ok "dashboard provisioned" || bad "dashboard missing"
